@@ -13,7 +13,9 @@ export interface LiteApiProfile {
 
 export interface LiteIdentity {
   characterName: string;
+  characterAvatar: string;
   userName: string;
+  userPrompt: string;
   systemPrompt: string;
 }
 

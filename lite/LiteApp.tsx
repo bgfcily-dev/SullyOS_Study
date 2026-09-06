@@ -1,18 +1,16 @@
 import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowClockwise,
+  Camera,
   CheckCircle,
   Cloud,
-  CloudArrowDown,
   CloudArrowUp,
   Copy,
   GearSix,
   MagicWand,
-  Moon,
   PaperPlaneRight,
   Plus,
   Sparkle,
-  Sun,
   Trash,
   WarningCircle,
   X,
@@ -25,25 +23,24 @@ import {
   loadApiProfiles,
   loadCloudConfig,
   loadEmbeddingConfig,
+  loadFontSize,
   loadIdentity,
   loadLocalMessages,
-  loadOriginalApiProfiles,
-  loadOriginalMemorySettings,
   loadTheme,
   saveApiProfiles,
   saveCloudConfig,
   saveEmbeddingConfig,
+  saveFontSize,
   saveIdentity,
   saveLocalMessages,
   saveTheme,
 } from './storage';
 import { recallLiteMemories } from './memoryRecall';
-import { LITE_BUILTIN_CHAT_RULES, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
 import { fetchLiteModels } from './modelApi';
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
-type SettingsSection = 'api' | 'role' | 'memory' | 'local';
+type SettingsSection = 'api' | 'role' | 'memory' | 'appearance' | 'local';
 
 const formatSyncTime = (timestamp: number): string => timestamp
   ? new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(timestamp)
@@ -58,6 +55,7 @@ export function LiteApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('api');
   const [theme, setTheme] = useState<LiteTheme>(loadTheme);
+  const [fontSize, setFontSize] = useState(loadFontSize);
   const [apiProfiles, setApiProfiles] = useState<LiteApiProfile[]>(loadApiProfiles);
   const [activeApiId, setActiveApiId] = useState(() => loadActiveApiId(loadApiProfiles()));
   const [identity, setIdentity] = useState<LiteIdentity>(loadIdentity);
@@ -71,6 +69,8 @@ export function LiteApp() {
   const [settingsNotice, setSettingsNotice] = useState<Notice>(null);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelQuery, setModelQuery] = useState('');
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -79,6 +79,10 @@ export function LiteApp() {
     () => mergeMessageHistory(cloudContext?.messages || [], localMessages, 100),
     [cloudContext, localMessages],
   );
+  const filteredModels = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    return query ? modelOptions.filter((model) => model.toLowerCase().includes(query)) : modelOptions;
+  }, [modelOptions, modelQuery]);
   const cloudReady = Boolean(cloudConfig.supabaseUrl && cloudConfig.supabaseAnonKey);
 
   useEffect(() => saveApiProfiles(apiProfiles, activeApiId), [apiProfiles, activeApiId]);
@@ -86,10 +90,18 @@ export function LiteApp() {
   useEffect(() => saveCloudConfig(cloudConfig), [cloudConfig]);
   useEffect(() => saveEmbeddingConfig(embeddingConfig), [embeddingConfig]);
   useEffect(() => saveLocalMessages(localMessages), [localMessages]);
-  useEffect(() => setModelOptions([]), [activeApiId]);
+  useEffect(() => {
+    setModelOptions([]);
+    setModelPickerOpen(false);
+  }, [activeApiId]);
+  useEffect(() => saveFontSize(fontSize), [fontSize]);
   useEffect(() => {
     saveTheme(theme);
     document.documentElement.dataset.liteTheme = theme;
+    const color = theme === 'dark' ? '#202020' : '#f5f2ed';
+    document.documentElement.style.backgroundColor = color;
+    document.body.style.backgroundColor = color;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
     return () => { delete document.documentElement.dataset.liteTheme; };
   }, [theme]);
   useEffect(() => messageEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [shownMessages.length, sending]);
@@ -141,26 +153,6 @@ export function LiteApp() {
     setSettingsNotice({ kind: 'success', text: '已删除刚才选中的 API 配置' });
   };
 
-  const importOriginalApis = () => {
-    const imported = loadOriginalApiProfiles();
-    if (imported.length === 0) {
-      setSettingsNotice({ kind: 'error', text: '这个浏览器里没有找到原版聊天 API 配置' });
-      return;
-    }
-    setApiProfiles((current) => {
-      const importedIds = new Set(imported.map((profile) => profile.id));
-      const remaining = current.filter((profile) => !importedIds.has(profile.id));
-      const usefulRemaining = remaining.filter((profile) => profile.baseUrl || profile.apiKey || profile.model || profile.id !== 'default');
-      return [...imported, ...usefulRemaining];
-    });
-    setActiveApiId(imported[0].id);
-    const withKeys = imported.filter((profile) => profile.apiKey).length;
-    setSettingsNotice({
-      kind: withKeys === imported.length ? 'success' : 'info',
-      text: `已从原版读取 ${imported.length} 套 API，其中 ${withKeys} 套包含密钥`,
-    });
-  };
-
   const pullModels = async () => {
     if (!activeApi) return;
     setModelsBusy(true);
@@ -168,7 +160,8 @@ export function LiteApp() {
     try {
       const models = await fetchLiteModels(activeApi);
       setModelOptions(models);
-      if (!activeApi.model.trim()) updateActiveApi({ model: models[0] });
+      setModelQuery('');
+      setModelPickerOpen(true);
       setSettingsNotice({ kind: 'success', text: `连接成功，获取到 ${models.length} 个模型` });
     } catch (error: any) {
       setSettingsNotice({ kind: 'error', text: error?.message || '模型列表读取失败' });
@@ -231,39 +224,26 @@ export function LiteApp() {
     }
   };
 
-  const importOriginalMemorySettings = () => {
-    const imported = loadOriginalMemorySettings();
-    if (!imported.cloud && !imported.embedding) {
-      setSettingsNotice({ kind: 'error', text: '这个浏览器里没有找到原版记忆配置，可以手动复制填写' });
+  const selectAvatar = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setSettingsNotice({ kind: 'error', text: '请选择图片文件' });
       return;
     }
-    if (imported.cloud) setCloudConfig((current) => ({
-      ...current,
-      supabaseUrl: imported.cloud?.supabaseUrl || current.supabaseUrl,
-      supabaseAnonKey: imported.cloud?.supabaseAnonKey || current.supabaseAnonKey,
-    }));
-    if (imported.embedding) setEmbeddingConfig((current) => ({
-      ...imported.embedding!,
-      apiKey: imported.embedding?.apiKey || current.apiKey,
-    }));
-    const cloudText = imported.cloud
-      ? `Supabase ${imported.cloud.supabaseAnonKey ? '含密钥' : '只有 URL、未找到密钥'}`
-      : '未找到 Supabase';
-    const embeddingText = imported.embedding
-      ? `Embedding ${imported.embedding.apiKey ? '含密钥' : '未找到密钥'}`
-      : '未找到 Embedding';
-    const complete = Boolean(imported.cloud?.supabaseAnonKey && imported.embedding?.apiKey);
-    setSettingsNotice({
-      kind: complete ? 'success' : 'info',
-      text: `本机读取完成：${cloudText}；${embeddingText}`,
-    });
-  };
-
-  const applyRoleTemplate = () => {
-    if (identity.systemPrompt.trim() && identity.systemPrompt.trim() !== LITE_ROLE_PRESET_TEMPLATE.trim()
-      && !window.confirm('这会覆盖当前角色预设。确定套用原版风格模板吗？')) return;
-    setIdentity({ ...identity, systemPrompt: LITE_ROLE_PRESET_TEMPLATE });
-    setSettingsNotice({ kind: 'success', text: '已套用角色模板；通用聊天规则仍由代码自动加入' });
+    if (file.size > 2 * 1024 * 1024) {
+      setSettingsNotice({ kind: 'error', text: '头像图片不能超过 2MB' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return;
+      setIdentity((current) => ({ ...current, characterAvatar: reader.result as string }));
+      setSettingsNotice({ kind: 'success', text: '主屏幕头像已更新' });
+    };
+    reader.onerror = () => setSettingsNotice({ kind: 'error', text: '头像读取失败，请换一张图片' });
+    reader.readAsDataURL(file);
   };
 
   const syncToCloud = async () => {
@@ -332,19 +312,18 @@ export function LiteApp() {
   };
 
   return (
-    <main className={`lite-shell theme-${theme}`}>
+    <main className={`lite-shell theme-${theme}`} style={{ '--lite-message-font-size': `${fontSize}px` } as React.CSSProperties}>
       <header className="lite-header">
         <div className="lite-identity">
-          <div className="lite-avatar" aria-hidden="true">{(identity.characterName || 'S').slice(0, 1)}</div>
+          <div className="lite-avatar" aria-hidden="true">
+            {identity.characterAvatar ? <img src={identity.characterAvatar} alt="" /> : (identity.characterName || 'S').slice(0, 1)}
+          </div>
           <div>
             <h1>{identity.characterName || 'Sully'}</h1>
-            <p><span className={`status-dot ${cloudContext?.charId ? 'online' : ''}`} />{cloudContext?.charId ? '已连接原版角色' : '本机对话'}</p>
+            <p><span className={`status-dot ${cloudContext?.charId ? 'online' : ''}`} />{cloudContext?.charId ? '已连接' : '未连接'}</p>
           </div>
         </div>
         <div className="header-actions">
-          <button className="icon-button" type="button" aria-label={theme === 'light' ? '切换到夜间模式' : '切换到日间模式'} title={theme === 'light' ? '夜间模式' : '日间模式'} onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}>
-            {theme === 'light' ? <Moon size={21} weight="bold" /> : <Sun size={21} weight="bold" />}
-          </button>
           <button className="icon-button" type="button" aria-label="打开设置" onClick={() => setSettingsOpen(true)}>
             <GearSix size={22} weight="bold" />
           </button>
@@ -372,10 +351,10 @@ export function LiteApp() {
             <div className="handoff-label"><Cloud size={14} /> 来自 {cloudContext.sourceDeviceName || '其他设备'} 的共享上下文</div>
           )}
           {shownMessages.map((message) => (
-            <article className={`message-bubble ${message.role}`} key={message.id}>
-              <p>{message.content}</p>
-              <time>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(message.createdAt)}</time>
-            </article>
+            <div className={`message-row ${message.role}`} key={message.id}>
+              <article className={`message-bubble ${message.role}`}><p>{message.content}</p></article>
+              <time className="message-time">{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(message.createdAt)}</time>
+            </div>
           ))}
           {sending && <div className="typing-bubble"><i /><i /><i /></div>}
           <div ref={messageEndRef} />
@@ -400,7 +379,7 @@ export function LiteApp() {
         <button className="send-button" type="submit" aria-label="发送" disabled={!draft.trim() || sending}>
           <PaperPlaneRight size={22} weight="fill" />
         </button>
-        <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages.at(-1)?.role !== 'user'} onClick={() => void generateReply()}>
+        <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
           <MagicWand size={22} weight="fill" />
         </button>
       </form>
@@ -421,6 +400,7 @@ export function LiteApp() {
                 ['api', 'API 配置'],
                 ['role', '角色设置'],
                 ['memory', '向量记忆'],
+                ['appearance', '外观'],
                 ['local', '本机数据'],
               ] as const).map(([section, label]) => (
                 <button key={section} type="button" className={settingsSection === section ? 'active' : ''} onClick={() => setSettingsSection(section)}>{label}</button>
@@ -434,10 +414,6 @@ export function LiteApp() {
             </div>}
 
             {settingsSection === 'api' && <>
-            <div className="memory-import-row">
-              <div><strong>复用原版聊天 API</strong><p>可反复同步原版当前 API 和已保存的 API 预设，完整密钥只在本机读取。</p></div>
-              <button type="button" className="secondary-button" onClick={importOriginalApis}><CloudArrowDown size={16} />从本机原版读取</button>
-            </div>
             <div className="setting-card">
               <div className="setting-card-title">
                 <div><strong>聊天 API</strong><p>密钥只保存在当前设备，不会上传到共享上下文。</p></div>
@@ -455,46 +431,36 @@ export function LiteApp() {
               <label>API 地址<input value={activeApi?.baseUrl || ''} onChange={(event) => updateActiveApi({ baseUrl: event.target.value })} placeholder="https://example.com/v1" autoCapitalize="none" /></label>
               <label>API Key<input type="password" value={activeApi?.apiKey || ''} onChange={(event) => updateActiveApi({ apiKey: event.target.value })} placeholder="sk-..." autoCapitalize="none" /></label>
               <p className={`credential-state ${activeApi?.apiKey ? 'ready' : ''}`}>{keyStatus(activeApi?.apiKey || '')}</p>
-              <label>模型
-                <div className="input-action-row">
-                  <input list="lite-model-options" value={activeApi?.model || ''} onChange={(event) => updateActiveApi({ model: event.target.value })} placeholder="模型名称" autoCapitalize="none" />
-                  <button type="button" className="secondary-button" onClick={() => void pullModels()} disabled={modelsBusy}>{modelsBusy ? <ArrowClockwise size={16} className="spin" /> : <ArrowClockwise size={16} />}拉取模型</button>
-                </div>
-                <datalist id="lite-model-options">{modelOptions.map((model) => <option value={model} key={model} />)}</datalist>
-              </label>
-              {modelOptions.length > 0 && <label>从拉取结果中选择
-                <select value={modelOptions.includes(activeApi?.model || '') ? activeApi?.model : ''} onChange={(event) => updateActiveApi({ model: event.target.value })}>
-                  <option value="" disabled>请选择一个模型</option>
-                  {modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}
-                </select>
-              </label>}
+              <label>模型<input value={activeApi?.model || ''} onChange={(event) => updateActiveApi({ model: event.target.value })} placeholder="模型名称" autoCapitalize="none" /></label>
+              <div className="model-actions">
+                <button type="button" className="secondary-button" onClick={() => void pullModels()} disabled={modelsBusy}>{modelsBusy ? <ArrowClockwise size={16} className="spin" /> : <ArrowClockwise size={16} />}{modelsBusy ? '正在拉取' : modelOptions.length ? '刷新模型' : '拉取模型'}</button>
+                {modelOptions.length > 0 && <button type="button" className="secondary-button" onClick={() => { setModelQuery(''); setModelPickerOpen(true); }}>选择模型（{modelOptions.length}）</button>}
+              </div>
               <p className="field-hint">“发送”只把消息放进本机对话；只有点击“生成”时，才会使用这里的 API 调用 LLM。</p>
             </div>
             </>}
 
-            {settingsSection === 'role' && <div className="setting-card">
-              <div className="setting-card-title">
-                <div><strong>本机角色人设</strong><p>这里只写这个角色独有的设定。通用聊天规范固定内置在代码里，不需要重复写进人设。</p></div>
-                <button type="button" className="template-button" onClick={applyRoleTemplate}>套用模板</button>
+            {settingsSection === 'role' && <>
+              <div className="setting-card identity-panel">
+                <h3>角色人设</h3>
+                <div className="avatar-setting-row">
+                  <div className="avatar-preview">{identity.characterAvatar ? <img src={identity.characterAvatar} alt="角色头像预览" /> : (identity.characterName || 'S').slice(0, 1)}</div>
+                  <div className="avatar-actions">
+                    <label className="avatar-upload-button"><Camera size={17} />更换头像<input type="file" accept="image/*" onChange={selectAvatar} /></label>
+                    {identity.characterAvatar && <button type="button" className="danger-link" onClick={() => { setIdentity({ ...identity, characterAvatar: '' }); setSettingsNotice({ kind: 'success', text: '头像已恢复为文字头像' }); }}>移除头像</button>}
+                  </div>
+                </div>
+                <label>名字<input value={identity.characterName} onChange={(event) => setIdentity({ ...identity, characterName: event.target.value })} placeholder="角色名字" /></label>
+                <label>角色预设<textarea value={identity.systemPrompt} onChange={(event) => setIdentity({ ...identity, systemPrompt: event.target.value })} rows={7} placeholder="性格、说话方式、经历和边界" /></label>
               </div>
-              <div className="two-fields">
-                <label>角色称呼<input value={identity.characterName} onChange={(event) => setIdentity({ ...identity, characterName: event.target.value })} /></label>
-                <label>你的称呼<input value={identity.userName} onChange={(event) => setIdentity({ ...identity, userName: event.target.value })} /></label>
+              <div className="setting-card identity-panel">
+                <h3>用户</h3>
+                <label>名字<input value={identity.userName} onChange={(event) => setIdentity({ ...identity, userName: event.target.value })} placeholder="你的名字" /></label>
+                <label>用户预设<textarea value={identity.userPrompt} onChange={(event) => setIdentity({ ...identity, userPrompt: event.target.value })} rows={5} placeholder="希望角色知道的个人资料" /></label>
               </div>
-              <label>角色预设<textarea value={identity.systemPrompt} onChange={(event) => setIdentity({ ...identity, systemPrompt: event.target.value })} rows={12} placeholder="在这里写角色的关系、性格、说话方式和必要设定" /></label>
-              <p className="field-hint">可以保留 <code>{'{{characterName}}'}</code> 和 <code>{'{{userName}}'}</code>，发送给模型前会自动替换成上面的称呼。</p>
-              <details className="prompt-preview">
-                <summary>查看代码内置的聊天规则（共 {LITE_BUILTIN_CHAT_RULES.length} 组）</summary>
-                {LITE_BUILTIN_CHAT_RULES.map((section) => <div key={section.title}><strong>{section.title}</strong><ul>{section.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul></div>)}
-              </details>
-              <p className="field-hint">Lite 没有原版的表情包、转账、搜索等工具，因此没有复制那些专用指令，避免模型输出无法执行的代码。</p>
-            </div>}
+            </>}
 
             {settingsSection === 'memory' && <>
-            <div className="memory-import-row">
-              <div><strong>复用原版配置</strong><p>若原版与 Lite 在同一浏览器、同一网站域名，可直接读取本机保存的配置。</p></div>
-              <button type="button" className="secondary-button" onClick={importOriginalMemorySettings}>从本机原版读取</button>
-            </div>
             <div className="setting-card">
               <div className="setting-card-title"><div><strong>Supabase：接力与向量库</strong><p>这两个字段请复制原版“记忆宫殿 → 远程向量存储”的地址和 Publishable / anon key。</p></div></div>
               <label>Supabase URL<input value={cloudConfig.supabaseUrl} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseUrl: event.target.value })} placeholder="https://xxxx.supabase.co" autoCapitalize="none" /></label>
@@ -529,6 +495,19 @@ export function LiteApp() {
             </div>
             </>}
 
+            {settingsSection === 'appearance' && <div className="setting-card appearance-card">
+              <div className="setting-card-title"><strong>外观</strong></div>
+              <label>显示模式</label>
+              <div className="theme-choice" role="group" aria-label="显示模式">
+                <button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => { setTheme('light'); setSettingsNotice({ kind: 'success', text: '已切换到日间模式' }); }}>日间</button>
+                <button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => { setTheme('dark'); setSettingsNotice({ kind: 'success', text: '已切换到夜间模式' }); }}>夜间</button>
+              </div>
+              <label>聊天字体大小 <span className="range-value">{fontSize}px</span>
+                <input type="range" min="12" max="20" step="1" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} />
+              </label>
+              <div className="font-preview" style={{ fontSize: `${fontSize}px` }}>这是一段聊天文字预览。</div>
+            </div>}
+
             {settingsSection === 'local' && <div className="setting-card compact-card">
               <strong>本机记录</strong>
               <p>本机聊天、API 密钥、角色预设和主题设置都保存在此设备的浏览器中，不会放进共享上下文。安装到主屏幕后仍会保留。</p>
@@ -538,6 +517,29 @@ export function LiteApp() {
                 setSettingsNotice({ kind: 'success', text: '清除成功：本机聊天已清空，云端数据没有改变' });
               }}>清空本机聊天</button>
             </div>}
+          </section>
+        </div>
+      )}
+
+      {modelPickerOpen && (
+        <div className="model-picker-backdrop" role="presentation" onMouseDown={() => setModelPickerOpen(false)}>
+          <section className="model-picker" role="dialog" aria-modal="true" aria-labelledby="lite-model-picker-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="model-picker-header">
+              <div><span>{modelOptions.length} 个模型</span><h2 id="lite-model-picker-title">选择模型</h2></div>
+              <button type="button" className="icon-button" aria-label="关闭模型列表" onClick={() => setModelPickerOpen(false)}><X size={19} /></button>
+            </div>
+            <input className="model-search" value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="搜索模型名称" autoFocus />
+            <div className="model-list">
+              {filteredModels.length > 0 ? filteredModels.map((model) => (
+                <button type="button" className={activeApi?.model === model ? 'selected' : ''} key={model} onClick={() => {
+                  updateActiveApi({ model });
+                  setModelPickerOpen(false);
+                  setSettingsNotice({ kind: 'success', text: `已选择模型：${model}` });
+                }}>
+                  <span>{model}</span>{activeApi?.model === model && <CheckCircle size={18} weight="fill" />}
+                </button>
+              )) : <div className="model-empty">没有匹配的模型</div>}
+            </div>
           </section>
         </div>
       )}

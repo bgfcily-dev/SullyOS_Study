@@ -82,8 +82,8 @@ export function resolveLiteRolePreset(template: string, identity: Pick<LiteIdent
   const characterName = identity.characterName.trim() || '角色';
   const userName = identity.userName.trim() || '用户';
   return template
-    .replaceAll('{{characterName}}', characterName)
-    .replaceAll('{{userName}}', userName)
+    .split('{{characterName}}').join(characterName)
+    .split('{{userName}}').join(userName)
     .trim();
 }
 
@@ -92,10 +92,11 @@ export function buildLiteRoleContext(identity: LiteIdentity): string {
     '[System: Roleplay Configuration]',
     '### 你的身份 (Character)',
     `姓名：${identity.characterName.trim() || '角色'}`,
-    resolveLiteRolePreset(identity.systemPrompt, identity),
+    identity.systemPrompt.trim() ? `角色专属设定：\n${resolveLiteRolePreset(identity.systemPrompt, identity)}` : '',
     '### 互动对象 (User)',
     `姓名：${identity.userName.trim() || '用户'}`,
-  ].join('\n');
+    identity.userPrompt.trim() ? `用户资料：\n${identity.userPrompt.trim()}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 export function buildLiteBuiltinChatPrompt(): string {
