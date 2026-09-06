@@ -42,9 +42,21 @@ import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
 type SettingsSection = 'api' | 'role' | 'memory' | 'appearance' | 'local';
 
-const formatSyncTime = (timestamp: number): string => timestamp
-  ? new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(timestamp)
-  : '';
+const formatTimestamp = (timestamp: number, withDate = false): string => {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  try {
+    return new Intl.DateTimeFormat(undefined, withDate
+      ? { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+      : { hour: '2-digit', minute: '2-digit' }).format(timestamp);
+  } catch {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '';
+    const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    return withDate ? `${date.getMonth() + 1}/${date.getDate()} ${time}` : time;
+  }
+};
+
+const formatSyncTime = (timestamp: number): string => formatTimestamp(timestamp, true);
 
 const keyStatus = (value: string): string => value.trim()
   ? `已保存密钥（末尾 ${value.trim().slice(-4)}）`
@@ -104,7 +116,11 @@ export function LiteApp() {
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
     return () => { delete document.documentElement.dataset.liteTheme; };
   }, [theme]);
-  useEffect(() => messageEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [shownMessages.length, sending]);
+  useEffect(() => {
+    const target = messageEndRef.current;
+    if (!target || typeof target.scrollIntoView !== 'function') return;
+    try { target.scrollIntoView({ behavior: 'smooth' }); } catch { target.scrollIntoView(); }
+  }, [shownMessages.length, sending]);
 
   const refreshCloud = async (quiet = false) => {
     if (!cloudReady) return null;
@@ -353,7 +369,7 @@ export function LiteApp() {
           {shownMessages.map((message) => (
             <div className={`message-row ${message.role}`} key={message.id}>
               <article className={`message-bubble ${message.role}`}><p>{message.content}</p></article>
-              <time className="message-time">{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(message.createdAt)}</time>
+              <time className="message-time">{formatTimestamp(message.createdAt)}</time>
             </div>
           ))}
           {sending && <div className="typing-bubble"><i /><i /><i /></div>}

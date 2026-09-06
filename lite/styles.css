@@ -436,6 +436,7 @@ button { cursor: pointer; }
 .lite-crash-screen section { width: min(100%, 420px); padding: 28px; border: 1px solid #ded8cf; border-radius: 24px; background: #fffdf9; text-align: center; }
 .lite-crash-screen h1 { margin: 0 0 10px; font: 700 24px/1.2 Georgia, "Noto Serif SC", serif; }
 .lite-crash-screen p { margin: 0; color: #777169; line-height: 1.7; }
+.lite-crash-screen code { margin-top: 14px; padding: 10px; display: block; overflow-wrap: anywhere; color: #716b63; border-radius: 10px; background: #eeeae3; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: text; }
 .lite-crash-screen button { margin-top: 18px; padding: 11px 18px; color: #faf9f6; border: 0; border-radius: 12px; background: #343433; font-weight: 750; }
 .spin { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

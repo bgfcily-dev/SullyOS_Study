@@ -56,7 +56,9 @@ export function isHandoffMessage(value: unknown): value is HandoffMessage {
   return typeof item.id === 'string'
     && (item.role === 'user' || item.role === 'assistant')
     && typeof item.content === 'string'
-    && typeof item.createdAt === 'number';
+    && typeof item.createdAt === 'number'
+    && Number.isFinite(item.createdAt)
+    && item.createdAt > 0;
 }
 
 export function normalizeHandoffMessages(value: unknown): HandoffMessage[] {

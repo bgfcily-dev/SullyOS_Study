@@ -18,11 +18,28 @@ const createDeviceId = (): string => typeof crypto !== 'undefined' && typeof cry
   ? crypto.randomUUID()
   : `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+const safeGetItem = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const safeSetItem = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Some Android browsers disable or exhaust localStorage. The page should
+    // remain usable for the current session instead of crashing to a white screen.
+  }
+};
+
 const loadDeviceId = (): string => {
-  const saved = localStorage.getItem(KEYS.deviceId)?.trim();
+  const saved = safeGetItem(KEYS.deviceId)?.trim();
   if (saved) return saved;
   const next = createDeviceId();
-  localStorage.setItem(KEYS.deviceId, next);
+  safeSetItem(KEYS.deviceId, next);
   return next;
 };
 
@@ -36,20 +53,23 @@ const fallbackApi = (): LiteApiProfile => ({
 
 const readJson = <T,>(key: string): T | undefined => {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = safeGetItem(key);
     return raw ? JSON.parse(raw) as T : undefined;
   } catch {
     return undefined;
   }
 };
 
-const cleanApi = (value: Partial<LiteApiProfile>): LiteApiProfile => ({
-  id: String(value.id || `api-${Date.now()}`),
-  name: String(value.name || '未命名 API').trim() || '未命名 API',
-  baseUrl: String(value.baseUrl || '').trim().replace(/\/+$/, ''),
-  apiKey: String(value.apiKey || '').trim(),
-  model: String(value.model || '').trim(),
-});
+const cleanApi = (value: Partial<LiteApiProfile> | null | undefined): LiteApiProfile => {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    id: String(source.id || `api-${Date.now()}`),
+    name: String(source.name || '未命名 API').trim() || '未命名 API',
+    baseUrl: String(source.baseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(source.apiKey || '').trim(),
+    model: String(source.model || '').trim(),
+  };
+};
 
 export function loadApiProfiles(): LiteApiProfile[] {
   const saved = readJson<LiteApiProfile[]>(KEYS.apiProfiles);
@@ -58,12 +78,12 @@ export function loadApiProfiles(): LiteApiProfile[] {
 }
 
 export function saveApiProfiles(profiles: LiteApiProfile[], activeId: string): void {
-  localStorage.setItem(KEYS.apiProfiles, JSON.stringify(profiles.map(cleanApi)));
-  localStorage.setItem(KEYS.activeApiId, activeId);
+  safeSetItem(KEYS.apiProfiles, JSON.stringify(profiles.map(cleanApi)));
+  safeSetItem(KEYS.activeApiId, activeId);
 }
 
 export function loadActiveApiId(profiles: LiteApiProfile[]): string {
-  const saved = localStorage.getItem(KEYS.activeApiId);
+  const saved = safeGetItem(KEYS.activeApiId);
   return profiles.some((profile) => profile.id === saved) ? saved! : profiles[0]?.id || 'default';
 }
 
@@ -84,7 +104,7 @@ export function loadIdentity(): LiteIdentity {
 }
 
 export function saveIdentity(identity: LiteIdentity): void {
-  localStorage.setItem(KEYS.identity, JSON.stringify(identity));
+  safeSetItem(KEYS.identity, JSON.stringify(identity));
 }
 
 export function loadCloudConfig(): LiteCloudConfig {
@@ -98,7 +118,7 @@ export function loadCloudConfig(): LiteCloudConfig {
 }
 
 export function saveCloudConfig(config: LiteCloudConfig): void {
-  localStorage.setItem(KEYS.cloud, JSON.stringify({
+  safeSetItem(KEYS.cloud, JSON.stringify({
     ...config,
     supabaseUrl: config.supabaseUrl.trim().replace(/\/+$/, ''),
     supabaseAnonKey: config.supabaseAnonKey.trim(),
@@ -123,7 +143,7 @@ export function loadEmbeddingConfig(): LiteEmbeddingConfig {
 }
 
 export function saveEmbeddingConfig(config: LiteEmbeddingConfig): void {
-  localStorage.setItem(KEYS.embedding, JSON.stringify({
+  safeSetItem(KEYS.embedding, JSON.stringify({
     ...config,
     baseUrl: config.baseUrl.trim().replace(/\/+$/, ''),
     apiKey: config.apiKey.trim(),
@@ -133,22 +153,26 @@ export function saveEmbeddingConfig(config: LiteEmbeddingConfig): void {
 }
 
 export function loadTheme(): LiteTheme {
-  const saved = localStorage.getItem(KEYS.theme);
+  const saved = safeGetItem(KEYS.theme);
   if (saved === 'light' || saved === 'dark') return saved;
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  try {
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
 }
 
 export function saveTheme(theme: LiteTheme): void {
-  localStorage.setItem(KEYS.theme, theme);
+  safeSetItem(KEYS.theme, theme);
 }
 
 export function loadFontSize(): number {
-  const saved = Number(localStorage.getItem(KEYS.fontSize));
+  const saved = Number(safeGetItem(KEYS.fontSize));
   return Number.isFinite(saved) && saved >= 12 && saved <= 20 ? saved : 14;
 }
 
 export function saveFontSize(size: number): void {
-  localStorage.setItem(KEYS.fontSize, String(Math.min(20, Math.max(12, Math.round(size)))));
+  safeSetItem(KEYS.fontSize, String(Math.min(20, Math.max(12, Math.round(size)))));
 }
 
 export function loadLocalMessages(): LiteMessage[] {
@@ -156,5 +180,5 @@ export function loadLocalMessages(): LiteMessage[] {
 }
 
 export function saveLocalMessages(messages: LiteMessage[]): void {
-  localStorage.setItem(KEYS.messages, JSON.stringify(messages.slice(-LOCAL_MESSAGE_LIMIT)));
+  safeSetItem(KEYS.messages, JSON.stringify(messages.slice(-LOCAL_MESSAGE_LIMIT)));
 }

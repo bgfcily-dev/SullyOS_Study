@@ -1,9 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_LITE_DEFAULT_PROMPT } from './prompts';
-import { loadApiProfiles, loadCloudConfig, loadEmbeddingConfig, loadIdentity } from './storage';
+import { loadApiProfiles, loadCloudConfig, loadEmbeddingConfig, loadIdentity, saveTheme } from './storage';
 
 describe('Sully Lite storage isolation', () => {
   beforeEach(() => localStorage.clear());
@@ -32,5 +32,15 @@ describe('Sully Lite storage isolation', () => {
       userPrompt: '',
       systemPrompt: '',
     });
+  });
+
+  it('does not crash when Android blocks or exhausts local storage', () => {
+    const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    expect(() => loadApiProfiles()).not.toThrow();
+    getSpy.mockRestore();
+
+    const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    expect(() => saveTheme('dark')).not.toThrow();
+    setSpy.mockRestore();
   });
 });

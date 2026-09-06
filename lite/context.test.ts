@@ -41,4 +41,11 @@ describe('Sully Lite shared context', () => {
     const result = parseSharedContextRow({ messages: [{ id: 'legacy', role: 'assistant', content: '旧消息', createdAt: 10 }] });
     expect(result.messages[0].origin).toBe('lite');
   });
+
+  it('drops corrupted timestamps before they can break Android date rendering', () => {
+    const result = parseSharedContextRow({
+      messages: [message('good', 10), message('nan', Number.NaN), message('negative', -1)],
+    });
+    expect(result.messages.map((item) => item.id)).toEqual(['good']);
+  });
 });
