@@ -2,22 +2,54 @@ import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, Share
 import { mergeMessageHistory } from './context';
 import { buildLiteBuiltinChatPrompt, buildLiteRoleContext } from './prompts';
 
-function chatUrl(baseUrl: string): string {
+export function liteChatUrl(baseUrl: string): string {
   const clean = baseUrl.trim().replace(/\/+$/, '');
   return clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
 }
 
-function extractText(value: unknown): string {
+export function extractLiteText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
     return value.map((part) => {
       if (typeof part === 'string') return part;
       if (!part || typeof part !== 'object') return '';
       const item = part as Record<string, unknown>;
-      return extractText(item.text ?? item.content ?? item.value);
+      return extractLiteText(item.text ?? item.content ?? item.value);
     }).join('');
   }
   return '';
+}
+
+export async function testLiteChatConnection(api: LiteApiProfile): Promise<string> {
+  if (!api.baseUrl.trim() || !api.apiKey.trim() || !api.model.trim()) {
+    throw new Error('请先填写完整的 API 地址、密钥和模型');
+  }
+  let response: Response;
+  try {
+    response = await fetch(liteChatUrl(api.baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${api.apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: api.model.trim(),
+        stream: false,
+        max_tokens: 3,
+        messages: [{ role: 'user', content: '只回复 OK' }],
+      }),
+    });
+  } catch {
+    throw new Error('无法连接聊天 API，请检查地址、网络和网页跨域权限');
+  }
+  const raw = await response.text();
+  let data: any = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch { /* status is still authoritative */ }
+  if (!response.ok) {
+    const detail = extractLiteText(data?.error?.message ?? data?.error) || raw.slice(0, 160);
+    throw new Error(`聊天 API 测试失败（${response.status}）：${detail || '未知错误'}`);
+  }
+  return `连接成功：模型 ${api.model.trim()} 可用`;
 }
 
 export async function requestLiteReply(input: {
@@ -51,7 +83,7 @@ export async function requestLiteReply(input: {
   const abortForwarder = () => controller.abort();
   input.signal?.addEventListener('abort', abortForwarder, { once: true });
   try {
-    const response = await fetch(chatUrl(api.baseUrl), {
+    const response = await fetch(liteChatUrl(api.baseUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -73,12 +105,12 @@ export async function requestLiteReply(input: {
       throw new Error(`API 返回的不是 JSON：${raw.slice(0, 120) || '空响应'}`);
     }
     if (!response.ok) {
-      const detail = extractText(data?.error?.message ?? data?.error) || raw.slice(0, 160);
+      const detail = extractLiteText(data?.error?.message ?? data?.error) || raw.slice(0, 160);
       throw new Error(`API 请求失败（${response.status}）：${detail}`);
     }
     const message = data?.choices?.[0]?.message;
-    let text = extractText(message?.content);
-    if (!text.trim()) text = extractText(message?.reasoning_content);
+    let text = extractLiteText(message?.content);
+    if (!text.trim()) text = extractLiteText(message?.reasoning_content);
     text = text.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '').trim();
     if (!text) throw new Error('API 返回成功，但没有找到回复正文');
     return text;

@@ -38,3 +38,10 @@ export interface LiteMemoryRecall {
   importance: number;
   similarity: number;
 }
+
+export interface LiteVectorStats {
+  totalCount: number;
+  currentCharacterCount: number | null;
+  charId: string;
+  checkedAt: number;
+}

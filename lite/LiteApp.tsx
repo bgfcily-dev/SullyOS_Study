@@ -17,7 +17,7 @@ import {
 } from '@phosphor-icons/react';
 import { clearSharedContext, fetchSharedContext, publishSharedContext, SHARED_CONTEXT_SQL, testSharedContextConnection } from './cloud';
 import { mergeMessageHistory, newLiteMessage } from './context';
-import { requestLiteReply } from './chatApi';
+import { requestLiteReply, testLiteChatConnection } from './chatApi';
 import {
   loadActiveApiId,
   loadApiProfiles,
@@ -36,8 +36,10 @@ import {
   saveTheme,
 } from './storage';
 import { recallLiteMemories } from './memoryRecall';
+import { archiveLiteContextToVectors, inspectLiteVectorStore, testLiteEmbeddingConnection } from './memoryTools';
 import { fetchLiteModels } from './modelApi';
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, SharedRecentContext } from './types';
+import { splitLiteReply } from './replyChunks';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, LiteVectorStats, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
 type SettingsSection = 'api' | 'role' | 'memory' | 'appearance' | 'local';
@@ -81,6 +83,11 @@ export function LiteApp() {
   const [settingsNotice, setSettingsNotice] = useState<Notice>(null);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [apiTestBusy, setApiTestBusy] = useState(false);
+  const [embeddingTestBusy, setEmbeddingTestBusy] = useState(false);
+  const [vectorInspectBusy, setVectorInspectBusy] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [vectorStats, setVectorStats] = useState<LiteVectorStats | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
   const [showSql, setShowSql] = useState(false);
@@ -186,6 +193,19 @@ export function LiteApp() {
     }
   };
 
+  const testChatApi = async () => {
+    if (!activeApi) return;
+    setApiTestBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在测试聊天 API…' });
+    try {
+      setSettingsNotice({ kind: 'success', text: await testLiteChatConnection(activeApi) });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '聊天 API 测试失败' });
+    } finally {
+      setApiTestBusy(false);
+    }
+  };
+
   const sendMessage = (event?: FormEvent) => {
     event?.preventDefault();
     const content = draft.trim();
@@ -232,7 +252,13 @@ export function LiteApp() {
         setLastRecallCount(0);
       }
       const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: activeCloud, localMessages, memories });
-      setLocalMessages((current) => [...current, newLiteMessage('assistant', reply)]);
+      const replyParts = splitLiteReply(reply);
+      const baseTime = Date.now();
+      const replyMessages = replyParts.map((content, index) => ({
+        ...newLiteMessage('assistant', content),
+        createdAt: baseTime + index,
+      }));
+      setLocalMessages((current) => [...current, ...replyMessages]);
     } catch (error: any) {
       setNotice({ kind: 'error', text: error?.message || '生成回复失败' });
     } finally {
@@ -294,6 +320,61 @@ export function LiteApp() {
       setSettingsNotice({ kind: 'error', text: error?.message || '连接失败' });
     } finally {
       setCloudBusy(false);
+    }
+  };
+
+  const testEmbedding = async () => {
+    setEmbeddingTestBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在测试 Embedding API…' });
+    try {
+      setSettingsNotice({ kind: 'success', text: await testLiteEmbeddingConnection(embeddingConfig) });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || 'Embedding API 测试失败' });
+    } finally {
+      setEmbeddingTestBusy(false);
+    }
+  };
+
+  const inspectVectors = async () => {
+    setVectorInspectBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在读取 Supabase 中的实际向量数量…' });
+    try {
+      const stats = await inspectLiteVectorStore(cloudConfig, cloudContext?.charId || '');
+      setVectorStats(stats);
+      const currentText = stats.currentCharacterCount == null ? '当前尚无角色 ID' : `当前角色 ${stats.currentCharacterCount} 条`;
+      setSettingsNotice({ kind: 'success', text: `查询成功：云端全部 ${stats.totalCount} 条，${currentText}` });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '向量数量查询失败' });
+    } finally {
+      setVectorInspectBusy(false);
+    }
+  };
+
+  const archiveCurrentContext = async () => {
+    if (!activeApi) return;
+    setArchiveBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在用聊天 API 整理当前上下文…' });
+    try {
+      const result = await archiveLiteContextToVectors({
+        api: activeApi,
+        cloud: cloudConfig,
+        embedding: embeddingConfig,
+        identity,
+        charId: cloudContext?.charId || '',
+        messages: shownMessages,
+      });
+      if (result.saved === 0) {
+        setSettingsNotice({ kind: 'info', text: `已检查最近 ${result.usedMessages} 条上下文，没有提取到需要长期保留的记忆` });
+      } else {
+        try {
+          setVectorStats(await inspectLiteVectorStore(cloudConfig, cloudContext?.charId || ''));
+        } catch { /* the successful write remains successful even if recounting fails */ }
+        setSettingsNotice({ kind: 'success', text: `整理成功：已将 ${result.saved} 条向量记忆写入当前角色` });
+      }
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '当前上下文整理失败' });
+    } finally {
+      setArchiveBusy(false);
     }
   };
 
@@ -449,6 +530,7 @@ export function LiteApp() {
               <p className={`credential-state ${activeApi?.apiKey ? 'ready' : ''}`}>{keyStatus(activeApi?.apiKey || '')}</p>
               <label>模型<input value={activeApi?.model || ''} onChange={(event) => updateActiveApi({ model: event.target.value })} placeholder="模型名称" autoCapitalize="none" /></label>
               <div className="model-actions">
+                <button type="button" className="secondary-button" onClick={() => void testChatApi()} disabled={apiTestBusy}>{apiTestBusy ? <ArrowClockwise size={16} className="spin" /> : <CheckCircle size={16} />}{apiTestBusy ? '正在测试' : '测试聊天 API'}</button>
                 <button type="button" className="secondary-button" onClick={() => void pullModels()} disabled={modelsBusy}>{modelsBusy ? <ArrowClockwise size={16} className="spin" /> : <ArrowClockwise size={16} />}{modelsBusy ? '正在拉取' : modelOptions.length ? '刷新模型' : '拉取模型'}</button>
                 {modelOptions.length > 0 && <button type="button" className="secondary-button" onClick={() => { setModelQuery(''); setModelPickerOpen(true); }}>选择模型（{modelOptions.length}）</button>}
               </div>
@@ -507,6 +589,19 @@ export function LiteApp() {
                 <label>Embedding 模型<input value={embeddingConfig.model} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, model: event.target.value })} placeholder="BAAI/bge-m3" /></label>
                 <label>向量维度<input type="number" min="1" value={embeddingConfig.dimensions} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, dimensions: Number(event.target.value) || 1024 })} /></label>
               </div>
+              <div className="memory-tool-actions">
+                <button type="button" className="secondary-button" onClick={() => void testEmbedding()} disabled={embeddingTestBusy || archiveBusy}>{embeddingTestBusy ? <ArrowClockwise size={16} className="spin" /> : <CheckCircle size={16} />}{embeddingTestBusy ? '正在测试' : '测试 Embedding API'}</button>
+                <button type="button" className="secondary-button" onClick={() => void inspectVectors()} disabled={vectorInspectBusy || archiveBusy}>{vectorInspectBusy ? <ArrowClockwise size={16} className="spin" /> : <Cloud size={16} />}{vectorInspectBusy ? '正在查询' : '检查云端向量数量'}</button>
+              </div>
+              {vectorStats && <div className="vector-stats" role="status">
+                <div><span>云端全部</span><strong>{vectorStats.totalCount} 条</strong></div>
+                <div><span>当前角色</span><strong>{vectorStats.currentCharacterCount == null ? '未获取 ID' : `${vectorStats.currentCharacterCount} 条`}</strong></div>
+                {vectorStats.charId && <small>charId：{vectorStats.charId}</small>}
+              </div>}
+              <button type="button" className="primary-button archive-context-button" onClick={() => void archiveCurrentContext()} disabled={archiveBusy || embeddingTestBusy || vectorInspectBusy}>
+                {archiveBusy ? <ArrowClockwise size={17} className="spin" /> : <Sparkle size={17} weight="fill" />}{archiveBusy ? '正在处理' : '一键把当前上下文整理成向量记忆'}
+              </button>
+              <p className="field-hint">最多整理当前最近 50 条消息。聊天 API 负责提取，Embedding API 负责向量化，最后直接写入 Supabase 的 <code>memory_vectors</code>。重复处理同一批内容会覆盖同一批记忆，不会无限复制。</p>
               <p className="field-hint">必须与原版创建这些记忆时使用的模型和维度一致。没有填写完整时会跳过记忆检索，但普通聊天仍可继续。</p>
             </div>
             </>}
