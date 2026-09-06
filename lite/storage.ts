@@ -1,5 +1,6 @@
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage, LiteTheme } from './types';
 import { LOCAL_MESSAGE_LIMIT, normalizeMessages } from './context';
+import { LEGACY_LITE_DEFAULT_PROMPT, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
 
 const KEYS = {
   apiProfiles: 'sully_lite_api_profiles_v1',
@@ -9,6 +10,7 @@ const KEYS = {
   embedding: 'sully_lite_embedding_v1',
   identity: 'sully_lite_identity_v1',
   messages: 'sully_lite_messages_v1',
+  theme: 'sully_lite_theme_v1',
 };
 
 const createDeviceId = (): string => typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -89,10 +91,12 @@ export function loadActiveApiId(profiles: LiteApiProfile[]): string {
 
 export function loadIdentity(): LiteIdentity {
   const saved = readJson<Partial<LiteIdentity>>(KEYS.identity);
+  const savedPrompt = String(saved?.systemPrompt || '').trim();
   return {
     characterName: String(saved?.characterName || 'Sully'),
     userName: String(saved?.userName || 'TA'),
-    systemPrompt: String(saved?.systemPrompt || '你是用户熟悉且信任的长期聊天伙伴。自然、连贯地延续对话，不要声称自己看到了未提供的信息。'),
+    systemPrompt: !savedPrompt || savedPrompt === LEGACY_LITE_DEFAULT_PROMPT ? LITE_ROLE_PRESET_TEMPLATE : savedPrompt,
+    useBuiltinRules: saved?.useBuiltinRules !== false,
   };
 }
 
@@ -146,6 +150,42 @@ export function saveEmbeddingConfig(config: LiteEmbeddingConfig): void {
     model: config.model.trim(),
     dimensions: Number.isFinite(config.dimensions) && config.dimensions > 0 ? config.dimensions : 1024,
   }));
+}
+
+export function loadOriginalMemorySettings(): {
+  cloud?: Pick<LiteCloudConfig, 'supabaseUrl' | 'supabaseAnonKey'>;
+  embedding?: LiteEmbeddingConfig;
+} {
+  const remote = readJson<Record<string, unknown>>('os_remote_vector_config');
+  const memoryPalace = readJson<{ embedding?: Partial<LiteEmbeddingConfig> }>('os_memory_palace_config');
+  const embedding = memoryPalace?.embedding;
+  const supabaseUrl = String(remote?.supabaseUrl || '').trim().replace(/\/+$/, '');
+  const supabaseAnonKey = String(remote?.supabaseAnonKey || '').trim();
+  const baseUrl = String(embedding?.baseUrl || '').trim().replace(/\/+$/, '');
+  const apiKey = String(embedding?.apiKey || '').trim();
+  const model = String(embedding?.model || '').trim();
+  const dimensions = Number(embedding?.dimensions || 1024);
+
+  return {
+    cloud: supabaseUrl || supabaseAnonKey ? { supabaseUrl, supabaseAnonKey } : undefined,
+    embedding: baseUrl || apiKey || model ? {
+      enabled: Boolean(apiKey && model),
+      baseUrl: baseUrl || 'https://api.siliconflow.cn/v1',
+      apiKey,
+      model: model || 'BAAI/bge-m3',
+      dimensions: Number.isFinite(dimensions) && dimensions > 0 ? dimensions : 1024,
+    } : undefined,
+  };
+}
+
+export function loadTheme(): LiteTheme {
+  const saved = localStorage.getItem(KEYS.theme);
+  if (saved === 'light' || saved === 'dark') return saved;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+export function saveTheme(theme: LiteTheme): void {
+  localStorage.setItem(KEYS.theme, theme);
 }
 
 export function loadLocalMessages(): LiteMessage[] {

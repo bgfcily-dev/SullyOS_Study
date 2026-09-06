@@ -1,5 +1,6 @@
 import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, SharedRecentContext } from './types';
 import { mergeMessageHistory } from './context';
+import { buildLiteBuiltinChatPrompt, buildLiteRoleContext } from './prompts';
 
 function chatUrl(baseUrl: string): string {
   const clean = baseUrl.trim().replace(/\/+$/, '');
@@ -33,10 +34,11 @@ export async function requestLiteReply(input: {
   const identity = input.identity;
   const history = mergeMessageHistory(cloudContext?.messages || [], localMessages, 50);
   const memoryText = input.memories?.length
-    ? `### 长期记忆\n以下内容是与本轮话题相关的既有记忆。只在相关时自然影响回复，不要逐条复述，也不要向用户解释检索过程。\n${input.memories.map((memory) => `- [${memory.room || '记忆'} · 重要性${memory.importance}] ${memory.content}`).join('\n')}`
+    ? `### 记忆宫殿\n以下内容是与本轮话题相关的既有记忆。只在相关时自然影响回复，不要逐条复述，也不要向用户解释检索过程。\n${input.memories.map((memory) => `- **[${memory.room || '记忆'}]**（重要性 ${memory.importance}）：${memory.content}`).join('\n')}`
     : '';
   const systemText = [
-    identity.systemPrompt,
+    buildLiteRoleContext(identity),
+    identity.useBuiltinRules ? buildLiteBuiltinChatPrompt() : '',
     `你现在以「${identity.characterName}」的身份和「${identity.userName}」继续同一段跨设备对话。`,
     cloudContext
       ? '下面的聊天历史可能来自另一台设备。把它当作自己亲历的最近对话，自然接续；不要向用户解释同步、云端或上下文注入。'

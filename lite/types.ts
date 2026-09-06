@@ -15,7 +15,10 @@ export interface LiteIdentity {
   characterName: string;
   userName: string;
   systemPrompt: string;
+  useBuiltinRules: boolean;
 }
+
+export type LiteTheme = 'light' | 'dark';
 
 export interface LiteCloudConfig extends HandoffCloudConfig {}
 
