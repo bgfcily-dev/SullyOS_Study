@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
 
 // 构建时抓 git 分支 + short commit + UTC+8 构建时间，注入到版本信息显示。
@@ -13,6 +14,7 @@ import { bakeVoiceMiddleware } from './server/bake-voice-middleware';
 //   - VITE_SHOW_BUILD_BADGE=1 强制显示（在 master 本地调试用）
 const RELEASE_BRANCHES = new Set(['main', 'master']);
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+const PROJECT_ROOT = process.cwd();
 
 function formatBuildTimeUtc8(date = new Date()): string {
   const utc8Date = new Date(date.getTime() + UTC8_OFFSET_MS);
@@ -142,6 +144,10 @@ export default defineConfig({
     assetsDir: 'assets',
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
+      input: {
+        main: resolve(PROJECT_ROOT, 'index.html'),
+        lite: resolve(PROJECT_ROOT, 'lite/index.html'),
+      },
       // 关键修复：将这些包排除在打包之外，让浏览器通过 index.html 的 importmap 加载
       external: ['katex'],
       onwarn(warning, defaultHandler) {

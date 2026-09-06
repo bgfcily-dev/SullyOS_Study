@@ -8,7 +8,7 @@ import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { buildChatFineTuneCss, mergeChatFineTune } from '../utils/chatFineTuneCss';
 import ChatFineTunePanel from '../components/chat/ChatFineTunePanel';
 import TokenImg from '../components/os/TokenImg';
-import { FadersHorizontal } from '@phosphor-icons/react';
+import { CloudArrowUp, FadersHorizontal } from '@phosphor-icons/react';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { useLocalDateKey } from '../hooks/useLocalDateKey';
@@ -44,6 +44,7 @@ import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import FavoritesPortal from '../components/chat/VoiceFavoritesPortal';
 import ChatModals from '../components/chat/ChatModals';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
+import RecentContextHandoffModal from '../components/chat/RecentContextHandoffModal';
 import type { ChatCleanupPlan } from '../utils/chatHistoryCleanup';
 import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
@@ -218,6 +219,7 @@ const Chat: React.FC = () => {
     // 「聊天装扮」悬浮态：不走全屏 modal——圆气泡挂在聊天上，点开小面板边看真聊天边调。
     const [fineTuneOpen, setFineTuneOpen] = useState(false);          // 圆气泡在场
     const [fineTunePanelOpen, setFineTunePanelOpen] = useState(false); // 小面板展开/收起
+    const [handoffOpen, setHandoffOpen] = useState(false);
     // 切换角色时收掉装扮气泡：定制是 per-character 的，避免误改到下一个角色
     useEffect(() => { setFineTuneOpen(false); setFineTunePanelOpen(false); }, [activeCharacterId]);
     const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
@@ -3841,6 +3843,7 @@ const Chat: React.FC = () => {
                 onClose={closeApp}
                 onTriggerAI={handleManualTrigger}
                 onShowCharsPanel={() => setShowPanel('chars')}
+                extraAction={{ label: '跨设备接力', icon: <CloudArrowUp size={20} weight="bold" />, onClick: () => setHandoffOpen(true) }}
                 onDeleteBuff={(buffId) => {
                     const currentBuffs = char.activeBuffs || [];
                     const newBuffs = currentBuffs.filter(b => b.id !== buffId);
@@ -3856,6 +3859,15 @@ const Chat: React.FC = () => {
                 chromeStyle={osTheme.chatChromeStyle}
                 hideBuffs={osTheme.chatHideHeaderBuffs}
                 acnh={acnh}
+             />
+
+             <RecentContextHandoffModal
+                isOpen={handoffOpen}
+                onClose={() => setHandoffOpen(false)}
+                character={char}
+                userName={userProfile?.name || 'TA'}
+                remoteVectorConfig={remoteVectorConfig}
+                onImported={() => reloadMessages(visibleCountRef.current)}
              />
 
             {/* 认知消化结果弹窗 — 全屏玻璃拟态 */}
