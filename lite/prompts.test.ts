@@ -6,7 +6,6 @@ const identity: LiteIdentity = {
   characterName: '小树',
   userName: '小雨',
   systemPrompt: LITE_ROLE_PRESET_TEMPLATE,
-  useBuiltinRules: true,
 };
 
 describe('Sully Lite prompts', () => {
@@ -31,5 +30,11 @@ describe('Sully Lite prompts', () => {
     expect(result).toContain('上下文与记忆');
     expect(result).not.toContain('SEND_EMOJI');
     expect(result).not.toContain('ACTION:TRANSFER');
+  });
+
+  it('keeps general behavior out of the editable character template', () => {
+    expect(LITE_ROLE_PRESET_TEMPLATE).toContain('角色自己的职业、生活、兴趣');
+    expect(LITE_ROLE_PRESET_TEMPLATE).not.toContain('不需要事事赞同');
+    expect(LITE_ROLE_PRESET_TEMPLATE).not.toContain('不要编造没有提供的信息');
   });
 });

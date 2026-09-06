@@ -3,6 +3,7 @@ import {
   ArrowClockwise,
   CheckCircle,
   Cloud,
+  CloudArrowDown,
   CloudArrowUp,
   Copy,
   GearSix,
@@ -26,6 +27,7 @@ import {
   loadEmbeddingConfig,
   loadIdentity,
   loadLocalMessages,
+  loadOriginalApiProfiles,
   loadOriginalMemorySettings,
   loadTheme,
   saveApiProfiles,
@@ -37,6 +39,7 @@ import {
 } from './storage';
 import { recallLiteMemories } from './memoryRecall';
 import { LITE_BUILTIN_CHAT_RULES, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
+import { fetchLiteModels } from './modelApi';
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
@@ -45,6 +48,10 @@ type SettingsSection = 'api' | 'role' | 'memory' | 'local';
 const formatSyncTime = (timestamp: number): string => timestamp
   ? new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(timestamp)
   : '';
+
+const keyStatus = (value: string): string => value.trim()
+  ? `已保存密钥（末尾 ${value.trim().slice(-4)}）`
+  : '尚未填写密钥';
 
 export function LiteApp() {
   const [draft, setDraft] = useState('');
@@ -61,6 +68,9 @@ export function LiteApp() {
   const [cloudBusy, setCloudBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const [settingsNotice, setSettingsNotice] = useState<Notice>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelsBusy, setModelsBusy] = useState(false);
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -76,6 +86,7 @@ export function LiteApp() {
   useEffect(() => saveCloudConfig(cloudConfig), [cloudConfig]);
   useEffect(() => saveEmbeddingConfig(embeddingConfig), [embeddingConfig]);
   useEffect(() => saveLocalMessages(localMessages), [localMessages]);
+  useEffect(() => setModelOptions([]), [activeApiId]);
   useEffect(() => {
     saveTheme(theme);
     document.documentElement.dataset.liteTheme = theme;
@@ -116,16 +127,54 @@ export function LiteApp() {
     const next: LiteApiProfile = { id: `api-${Date.now()}`, name: `API ${apiProfiles.length + 1}`, baseUrl: '', apiKey: '', model: '' };
     setApiProfiles((current) => [...current, next]);
     setActiveApiId(next.id);
+    setSettingsNotice({ kind: 'success', text: '已新建一套空白 API 配置' });
   };
 
   const removeApi = () => {
     if (apiProfiles.length <= 1) {
-      setNotice({ kind: 'info', text: '至少保留一个 API 配置' });
+      setSettingsNotice({ kind: 'info', text: '至少需要保留一个 API 配置' });
       return;
     }
     const next = apiProfiles.filter((profile) => profile.id !== activeApiId);
     setApiProfiles(next);
     setActiveApiId(next[0].id);
+    setSettingsNotice({ kind: 'success', text: '已删除刚才选中的 API 配置' });
+  };
+
+  const importOriginalApis = () => {
+    const imported = loadOriginalApiProfiles();
+    if (imported.length === 0) {
+      setSettingsNotice({ kind: 'error', text: '这个浏览器里没有找到原版聊天 API 配置' });
+      return;
+    }
+    setApiProfiles((current) => {
+      const importedIds = new Set(imported.map((profile) => profile.id));
+      const remaining = current.filter((profile) => !importedIds.has(profile.id));
+      const usefulRemaining = remaining.filter((profile) => profile.baseUrl || profile.apiKey || profile.model || profile.id !== 'default');
+      return [...imported, ...usefulRemaining];
+    });
+    setActiveApiId(imported[0].id);
+    const withKeys = imported.filter((profile) => profile.apiKey).length;
+    setSettingsNotice({
+      kind: withKeys === imported.length ? 'success' : 'info',
+      text: `已从原版读取 ${imported.length} 套 API，其中 ${withKeys} 套包含密钥`,
+    });
+  };
+
+  const pullModels = async () => {
+    if (!activeApi) return;
+    setModelsBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在连接 API 并读取模型列表…' });
+    try {
+      const models = await fetchLiteModels(activeApi);
+      setModelOptions(models);
+      if (!activeApi.model.trim()) updateActiveApi({ model: models[0] });
+      setSettingsNotice({ kind: 'success', text: `连接成功，获取到 ${models.length} 个模型` });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '模型列表读取失败' });
+    } finally {
+      setModelsBusy(false);
+    }
   };
 
   const sendMessage = (event?: FormEvent) => {
@@ -148,6 +197,7 @@ export function LiteApp() {
       setNotice({ kind: 'error', text: '请先完成聊天 API 设置' });
       setSettingsOpen(true);
       setSettingsSection('api');
+      setSettingsNotice({ kind: 'error', text: '请先填写完整的 API 地址、密钥和模型' });
       return;
     }
     setNotice(null);
@@ -184,14 +234,28 @@ export function LiteApp() {
   const importOriginalMemorySettings = () => {
     const imported = loadOriginalMemorySettings();
     if (!imported.cloud && !imported.embedding) {
-      setNotice({ kind: 'info', text: '这个浏览器里没有找到原版的记忆配置。可以手动复制填写。' });
+      setSettingsNotice({ kind: 'error', text: '这个浏览器里没有找到原版记忆配置，可以手动复制填写' });
       return;
     }
-    if (imported.cloud) setCloudConfig((current) => ({ ...current, ...imported.cloud }));
-    if (imported.embedding) setEmbeddingConfig(imported.embedding);
-    setNotice({
-      kind: 'success',
-      text: imported.cloud && imported.embedding ? '已读取原版的 Supabase 和 Embedding 配置' : imported.cloud ? '已读取原版的 Supabase 配置' : '已读取原版的 Embedding 配置',
+    if (imported.cloud) setCloudConfig((current) => ({
+      ...current,
+      supabaseUrl: imported.cloud?.supabaseUrl || current.supabaseUrl,
+      supabaseAnonKey: imported.cloud?.supabaseAnonKey || current.supabaseAnonKey,
+    }));
+    if (imported.embedding) setEmbeddingConfig((current) => ({
+      ...imported.embedding!,
+      apiKey: imported.embedding?.apiKey || current.apiKey,
+    }));
+    const cloudText = imported.cloud
+      ? `Supabase ${imported.cloud.supabaseAnonKey ? '含密钥' : '只有 URL、未找到密钥'}`
+      : '未找到 Supabase';
+    const embeddingText = imported.embedding
+      ? `Embedding ${imported.embedding.apiKey ? '含密钥' : '未找到密钥'}`
+      : '未找到 Embedding';
+    const complete = Boolean(imported.cloud?.supabaseAnonKey && imported.embedding?.apiKey);
+    setSettingsNotice({
+      kind: complete ? 'success' : 'info',
+      text: `本机读取完成：${cloudText}；${embeddingText}`,
     });
   };
 
@@ -199,12 +263,12 @@ export function LiteApp() {
     if (identity.systemPrompt.trim() && identity.systemPrompt.trim() !== LITE_ROLE_PRESET_TEMPLATE.trim()
       && !window.confirm('这会覆盖当前角色预设。确定套用原版风格模板吗？')) return;
     setIdentity({ ...identity, systemPrompt: LITE_ROLE_PRESET_TEMPLATE });
-    setNotice({ kind: 'success', text: '已套用分段角色模板，请把括号提示改成你的设定。' });
+    setSettingsNotice({ kind: 'success', text: '已套用角色模板；通用聊天规则仍由代码自动加入' });
   };
 
   const syncToCloud = async () => {
     setCloudBusy(true);
-    setNotice(null);
+    setSettingsNotice({ kind: 'info', text: '正在同步近期上下文…' });
     try {
       const latestCloud = cloudReady ? await fetchSharedContext(cloudConfig) : cloudContext;
       const next = await publishSharedContext({
@@ -215,9 +279,9 @@ export function LiteApp() {
         previousRevision: latestCloud?.revision || 0,
       });
       setCloudContext(next);
-      setNotice({ kind: 'success', text: `已发布第 ${next.revision} 版共享上下文，其他设备现在可以读取` });
+      setSettingsNotice({ kind: 'success', text: `同步成功：已发布第 ${next.revision} 版共享上下文` });
     } catch (error: any) {
-      setNotice({ kind: 'error', text: error?.message || '同步失败' });
+      setSettingsNotice({ kind: 'error', text: error?.message || '同步失败' });
     } finally {
       setCloudBusy(false);
     }
@@ -225,12 +289,13 @@ export function LiteApp() {
 
   const testCloud = async () => {
     setCloudBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在测试 Supabase 连接…' });
     try {
       const text = await testSharedContextConnection(cloudConfig);
-      setNotice({ kind: 'success', text });
+      setSettingsNotice({ kind: 'success', text });
       await refreshCloud(true);
     } catch (error: any) {
-      setNotice({ kind: 'error', text: error?.message || '连接失败' });
+      setSettingsNotice({ kind: 'error', text: error?.message || '连接失败' });
     } finally {
       setCloudBusy(false);
     }
@@ -242,11 +307,20 @@ export function LiteApp() {
     try {
       await clearSharedContext(cloudConfig);
       setCloudContext(null);
-      setNotice({ kind: 'success', text: '云端共享近期上下文已清除，本机聊天未删除' });
+      setSettingsNotice({ kind: 'success', text: '清除成功：本机聊天没有删除' });
     } catch (error: any) {
-      setNotice({ kind: 'error', text: error?.message || '清除失败' });
+      setSettingsNotice({ kind: 'error', text: error?.message || '清除失败' });
     } finally {
       setCloudBusy(false);
+    }
+  };
+
+  const copyHandoffSql = async () => {
+    try {
+      await navigator.clipboard.writeText(SHARED_CONTEXT_SQL);
+      setSettingsNotice({ kind: 'success', text: '初始化/升级 SQL 已复制到剪贴板' });
+    } catch {
+      setSettingsNotice({ kind: 'error', text: '复制失败，请长按下面的 SQL 手动复制' });
     }
   };
 
@@ -353,7 +427,18 @@ export function LiteApp() {
               ))}
             </nav>
 
-            {settingsSection === 'api' && <div className="setting-card">
+            {settingsNotice && <div className={`settings-feedback ${settingsNotice.kind}`} role="status">
+              {settingsNotice.kind === 'success' ? <CheckCircle size={18} weight="fill" /> : settingsNotice.kind === 'error' ? <WarningCircle size={18} weight="fill" /> : <ArrowClockwise size={18} />}
+              <span>{settingsNotice.text}</span>
+              <button type="button" aria-label="关闭设置提示" onClick={() => setSettingsNotice(null)}><X size={15} /></button>
+            </div>}
+
+            {settingsSection === 'api' && <>
+            <div className="memory-import-row">
+              <div><strong>复用原版聊天 API</strong><p>可反复同步原版当前 API 和已保存的 API 预设，完整密钥只在本机读取。</p></div>
+              <button type="button" className="secondary-button" onClick={importOriginalApis}><CloudArrowDown size={16} />从本机原版读取</button>
+            </div>
+            <div className="setting-card">
               <div className="setting-card-title">
                 <div><strong>聊天 API</strong><p>密钥只保存在当前设备，不会上传到共享上下文。</p></div>
                 <div className="small-actions">
@@ -369,13 +454,27 @@ export function LiteApp() {
               <label>显示名称<input value={activeApi?.name || ''} onChange={(event) => updateActiveApi({ name: event.target.value })} placeholder="例如：日常聊天" /></label>
               <label>API 地址<input value={activeApi?.baseUrl || ''} onChange={(event) => updateActiveApi({ baseUrl: event.target.value })} placeholder="https://example.com/v1" autoCapitalize="none" /></label>
               <label>API Key<input type="password" value={activeApi?.apiKey || ''} onChange={(event) => updateActiveApi({ apiKey: event.target.value })} placeholder="sk-..." autoCapitalize="none" /></label>
-              <label>模型<input value={activeApi?.model || ''} onChange={(event) => updateActiveApi({ model: event.target.value })} placeholder="模型名称" autoCapitalize="none" /></label>
+              <p className={`credential-state ${activeApi?.apiKey ? 'ready' : ''}`}>{keyStatus(activeApi?.apiKey || '')}</p>
+              <label>模型
+                <div className="input-action-row">
+                  <input list="lite-model-options" value={activeApi?.model || ''} onChange={(event) => updateActiveApi({ model: event.target.value })} placeholder="模型名称" autoCapitalize="none" />
+                  <button type="button" className="secondary-button" onClick={() => void pullModels()} disabled={modelsBusy}>{modelsBusy ? <ArrowClockwise size={16} className="spin" /> : <ArrowClockwise size={16} />}拉取模型</button>
+                </div>
+                <datalist id="lite-model-options">{modelOptions.map((model) => <option value={model} key={model} />)}</datalist>
+              </label>
+              {modelOptions.length > 0 && <label>从拉取结果中选择
+                <select value={modelOptions.includes(activeApi?.model || '') ? activeApi?.model : ''} onChange={(event) => updateActiveApi({ model: event.target.value })}>
+                  <option value="" disabled>请选择一个模型</option>
+                  {modelOptions.map((model) => <option value={model} key={model}>{model}</option>)}
+                </select>
+              </label>}
               <p className="field-hint">“发送”只把消息放进本机对话；只有点击“生成”时，才会使用这里的 API 调用 LLM。</p>
-            </div>}
+            </div>
+            </>}
 
             {settingsSection === 'role' && <div className="setting-card">
               <div className="setting-card-title">
-                <div><strong>本机角色预设</strong><p>参考原版的身份、互动对象和行为规则结构。内容只保存在这台设备。</p></div>
+                <div><strong>本机角色人设</strong><p>这里只写这个角色独有的设定。通用聊天规范固定内置在代码里，不需要重复写进人设。</p></div>
                 <button type="button" className="template-button" onClick={applyRoleTemplate}>套用模板</button>
               </div>
               <div className="two-fields">
@@ -384,9 +483,8 @@ export function LiteApp() {
               </div>
               <label>角色预设<textarea value={identity.systemPrompt} onChange={(event) => setIdentity({ ...identity, systemPrompt: event.target.value })} rows={12} placeholder="在这里写角色的关系、性格、说话方式和必要设定" /></label>
               <p className="field-hint">可以保留 <code>{'{{characterName}}'}</code> 和 <code>{'{{userName}}'}</code>，发送给模型前会自动替换成上面的称呼。</p>
-              <label className="toggle-line"><input type="checkbox" checked={identity.useBuiltinRules} onChange={(event) => setIdentity({ ...identity, useBuiltinRules: event.target.checked })} /><span>启用从原版整理出的内置聊天规则</span></label>
               <details className="prompt-preview">
-                <summary>查看内置规则（共 {LITE_BUILTIN_CHAT_RULES.length} 组）</summary>
+                <summary>查看代码内置的聊天规则（共 {LITE_BUILTIN_CHAT_RULES.length} 组）</summary>
                 {LITE_BUILTIN_CHAT_RULES.map((section) => <div key={section.title}><strong>{section.title}</strong><ul>{section.rules.map((rule) => <li key={rule}>{rule}</li>)}</ul></div>)}
               </details>
               <p className="field-hint">Lite 没有原版的表情包、转账、搜索等工具，因此没有复制那些专用指令，避免模型输出无法执行的代码。</p>
@@ -401,6 +499,7 @@ export function LiteApp() {
               <div className="setting-card-title"><div><strong>Supabase：接力与向量库</strong><p>这两个字段请复制原版“记忆宫殿 → 远程向量存储”的地址和 Publishable / anon key。</p></div></div>
               <label>Supabase URL<input value={cloudConfig.supabaseUrl} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseUrl: event.target.value })} placeholder="https://xxxx.supabase.co" autoCapitalize="none" /></label>
               <label>Supabase Publishable / anon key<input type="password" value={cloudConfig.supabaseAnonKey} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseAnonKey: event.target.value })} placeholder="sb_publishable_... 或 eyJ..." autoCapitalize="none" /></label>
+              <p className={`credential-state ${cloudConfig.supabaseAnonKey ? 'ready' : ''}`}>{keyStatus(cloudConfig.supabaseAnonKey)}</p>
               <label>这台设备的名称<input value={cloudConfig.deviceName} onChange={(event) => setCloudConfig({ ...cloudConfig, deviceName: event.target.value })} placeholder="例如：我的手机" /></label>
               <p className="field-hint">设备 ID 自动生成：{cloudConfig.deviceId.slice(0, 8)}…</p>
               <p className="field-hint">{cloudContext?.charId ? `原版角色 ID：${cloudContext.charId}` : '尚未收到角色 ID，请先在原版聊天页发布一次。'}</p>
@@ -410,7 +509,7 @@ export function LiteApp() {
               </div>
               <button type="button" className="sql-toggle" onClick={() => setShowSql((value) => !value)}>{showSql ? '收起初始化 SQL' : '第一次使用：显示初始化 SQL'}</button>
               {showSql && <div className="sql-box">
-                <div><span>复制后在 Supabase 的 SQL Editor 运行一次</span><button type="button" onClick={() => { void navigator.clipboard.writeText(SHARED_CONTEXT_SQL); setNotice({ kind: 'success', text: '初始化 SQL 已复制' }); }}><Copy size={15} />复制</button></div>
+                <div><span>复制后在 Supabase 的 SQL Editor 运行一次</span><button type="button" onClick={() => void copyHandoffSql()}><Copy size={15} />复制</button></div>
                 <pre>{SHARED_CONTEXT_SQL}</pre>
               </div>}
               <button type="button" className="danger-link" onClick={() => void clearCloud()} disabled={!cloudReady || cloudBusy}>清除云端共享上下文</button>
@@ -421,6 +520,7 @@ export function LiteApp() {
               <label className="toggle-line"><input type="checkbox" checked={embeddingConfig.enabled} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, enabled: event.target.checked })} /><span>点击“生成”时检索相关长期记忆</span></label>
               <label>Embedding API 地址<input value={embeddingConfig.baseUrl} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, baseUrl: event.target.value })} placeholder="https://api.siliconflow.cn/v1" autoCapitalize="none" /></label>
               <label>Embedding API Key<input type="password" value={embeddingConfig.apiKey} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, apiKey: event.target.value })} placeholder="sk-..." autoCapitalize="none" /></label>
+              <p className={`credential-state ${embeddingConfig.apiKey ? 'ready' : ''}`}>{keyStatus(embeddingConfig.apiKey)}</p>
               <div className="two-fields">
                 <label>Embedding 模型<input value={embeddingConfig.model} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, model: event.target.value })} placeholder="BAAI/bge-m3" /></label>
                 <label>向量维度<input type="number" min="1" value={embeddingConfig.dimensions} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, dimensions: Number(event.target.value) || 1024 })} /></label>
@@ -435,7 +535,7 @@ export function LiteApp() {
               <button type="button" className="danger-link" onClick={() => {
                 if (!window.confirm('确定清空这台设备上的聊天吗？云端共享上下文不会被删除。')) return;
                 setLocalMessages([]);
-                setNotice({ kind: 'success', text: '本机聊天已清空，云端共享上下文未改变' });
+                setSettingsNotice({ kind: 'success', text: '清除成功：本机聊天已清空，云端数据没有改变' });
               }}>清空本机聊天</button>
             </div>}
           </section>

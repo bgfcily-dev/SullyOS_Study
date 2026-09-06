@@ -38,7 +38,7 @@ export async function requestLiteReply(input: {
     : '';
   const systemText = [
     buildLiteRoleContext(identity),
-    identity.useBuiltinRules ? buildLiteBuiltinChatPrompt() : '',
+    buildLiteBuiltinChatPrompt(),
     `你现在以「${identity.characterName}」的身份和「${identity.userName}」继续同一段跨设备对话。`,
     cloudContext
       ? '下面的聊天历史可能来自另一台设备。把它当作自己亲历的最近对话，自然接续；不要向用户解释同步、云端或上下文注入。'

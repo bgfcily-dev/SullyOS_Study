@@ -1,6 +1,6 @@
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage, LiteTheme } from './types';
 import { LOCAL_MESSAGE_LIMIT, normalizeMessages } from './context';
-import { LEGACY_LITE_DEFAULT_PROMPT, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
+import { LEGACY_LITE_DEFAULT_PROMPT, LEGACY_LITE_ROLE_PRESET_TEMPLATE, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
 
 const KEYS = {
   apiProfiles: 'sully_lite_api_profiles_v1',
@@ -79,6 +79,44 @@ export function loadApiProfiles(): LiteApiProfile[] {
   return [fallbackApi()];
 }
 
+export function loadOriginalApiProfiles(): LiteApiProfile[] {
+  const fullPresets = readJson<Array<{ id?: string; name?: string; config?: Record<string, unknown> }>>('os_api_presets');
+  const current = readJson<Record<string, unknown>>('os_api_config');
+  const profiles: LiteApiProfile[] = [];
+
+  if (current?.baseUrl || current?.apiKey || current?.model) {
+    profiles.push(cleanApi({
+      id: 'original-main',
+      name: '原版当前 API',
+      baseUrl: String(current.baseUrl || ''),
+      apiKey: String(current.apiKey || ''),
+      model: String(current.model || ''),
+    }));
+  }
+
+  if (Array.isArray(fullPresets)) {
+    for (const preset of fullPresets) {
+      const config = preset.config || {};
+      if (!config.baseUrl && !config.apiKey && !config.model) continue;
+      profiles.push(cleanApi({
+        id: `original-preset-${preset.id || profiles.length}`,
+        name: `原版 · ${String(preset.name || 'API 预设')}`,
+        baseUrl: String(config.baseUrl || ''),
+        apiKey: String(config.apiKey || ''),
+        model: String(config.model || ''),
+      }));
+    }
+  }
+
+  const seen = new Set<string>();
+  return profiles.filter((profile) => {
+    const signature = `${profile.baseUrl}\n${profile.apiKey}\n${profile.model}`;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+}
+
 export function saveApiProfiles(profiles: LiteApiProfile[], activeId: string): void {
   localStorage.setItem(KEYS.apiProfiles, JSON.stringify(profiles.map(cleanApi)));
   localStorage.setItem(KEYS.activeApiId, activeId);
@@ -95,8 +133,9 @@ export function loadIdentity(): LiteIdentity {
   return {
     characterName: String(saved?.characterName || 'Sully'),
     userName: String(saved?.userName || 'TA'),
-    systemPrompt: !savedPrompt || savedPrompt === LEGACY_LITE_DEFAULT_PROMPT ? LITE_ROLE_PRESET_TEMPLATE : savedPrompt,
-    useBuiltinRules: saved?.useBuiltinRules !== false,
+    systemPrompt: !savedPrompt || savedPrompt === LEGACY_LITE_DEFAULT_PROMPT || savedPrompt === LEGACY_LITE_ROLE_PRESET_TEMPLATE
+      ? LITE_ROLE_PRESET_TEMPLATE
+      : savedPrompt,
   };
 }
 
