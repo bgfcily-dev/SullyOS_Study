@@ -1,5 +1,4 @@
-import type { LiteIdentity } from './types';
-import type { LiteMessage } from './types';
+import type { LiteIdentity, LiteMessage, LiteSticker } from './types';
 import { TIME_FRAMING_CONVERSATIONAL } from '../utils/timeFramingNote';
 
 export const LEGACY_LITE_DEFAULT_PROMPT = '你是用户熟悉且信任的长期聊天伙伴。自然、连贯地延续对话，不要声称自己看到了未提供的信息。';
@@ -110,6 +109,18 @@ export function buildLiteBuiltinChatPrompt(): string {
       ...section.rules.map((rule) => `- ${rule}`),
     ]),
   ].join('\n');
+}
+
+export function buildLiteStickerPrompt(stickers: LiteSticker[]): string {
+  if (stickers.length === 0) return '';
+  const names = stickers.map((sticker) => sticker.name.trim()).filter(Boolean);
+  if (names.length === 0) return '';
+  return `### 表情包能力
+- 你可以根据当前语气偶尔发送表情包。发送时必须把命令单独写成：\`[[SEND_EMOJI: 表情名称]]\`。
+- 命令里只能使用下面清单中一模一样的名称，不要填写图片网址，不要编造清单外的名称，也不要把命令解释给用户。
+- 一次回复可以同时包含普通文字和表情包；表情包命令会由界面自动变成独立图片气泡。
+- 历史中的 \`[用户 发送了表情包: xx]\` 或 \`[你 发送了表情包: xx]\` 只表示发送了一张名为 xx 的图。先结合上下文理解它表达的态度，不要把图片名称机械地当成现实中发生的动作。
+- 可用表情包：[${names.join(', ')}]`;
 }
 
 const routineAnchor = (hour: number): string => {

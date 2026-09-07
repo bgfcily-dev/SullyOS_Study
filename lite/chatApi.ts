@@ -1,6 +1,6 @@
-import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, SharedRecentContext } from './types';
+import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteSticker, SharedRecentContext } from './types';
 import { mergeMessageHistory } from './context';
-import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteTimeAwarenessPrompt, formatLiteMessageTime } from './prompts';
+import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteStickerPrompt, buildLiteTimeAwarenessPrompt, formatLiteMessageTime } from './prompts';
 
 export function liteChatUrl(baseUrl: string): string {
   const clean = baseUrl.trim().replace(/\/+$/, '');
@@ -57,6 +57,7 @@ export async function requestLiteReply(input: {
   identity: LiteIdentity;
   cloudContext: SharedRecentContext | null;
   localMessages: LiteMessage[];
+  stickers?: LiteSticker[];
   memories?: LiteMemoryRecall[];
   signal?: AbortSignal;
 }): Promise<string> {
@@ -71,16 +72,23 @@ export async function requestLiteReply(input: {
   const systemText = [
     buildLiteRoleContext(identity),
     buildLiteBuiltinChatPrompt(),
+    buildLiteStickerPrompt(input.stickers || []),
     `你现在以「${identity.characterName}」的身份和「${identity.userName}」继续同一段跨设备对话。`,
     cloudContext
       ? '下面的聊天历史可能来自另一台设备。把它当作自己亲历的最近对话，自然接续；不要向用户解释同步、云端或上下文注入。'
       : '',
     memoryText,
   ].filter(Boolean).join('\n\n');
-  const modelHistory = history.map((message) => ({
-    role: message.role,
-    content: `[${formatLiteMessageTime(message.createdAt)}] ${message.content}`,
-  }));
+  const modelHistory = history.map((message) => {
+    const stickerName = message.content.match(/^\[表情包：(.+)\]$/)?.[1]?.trim();
+    const content = stickerName
+      ? `[${message.role === 'user' ? '用户' : '你'} 发送了表情包: ${stickerName}]`
+      : message.content;
+    return {
+      role: message.role,
+      content: `[${formatLiteMessageTime(message.createdAt)}] ${content}`,
+    };
+  });
   const latestMessage = modelHistory.pop();
   const liveTimeText = buildLiteTimeAwarenessPrompt(new Date(), history);
 

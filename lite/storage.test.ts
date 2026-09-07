@@ -3,7 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_LITE_DEFAULT_PROMPT } from './prompts';
-import { loadApiProfiles, loadCloudConfig, loadEmbeddingConfig, loadIdentity, parseLiteStickerText, saveTheme } from './storage';
+import { formatLiteStickerText, loadApiProfiles, loadCloudConfig, loadEmbeddingConfig, loadIdentity, parseLiteStickerText, saveTheme } from './storage';
 
 describe('Sully Lite storage isolation', () => {
   beforeEach(() => localStorage.clear());
@@ -49,5 +49,9 @@ describe('Sully Lite storage isolation', () => {
       { name: '开心', url: 'https://img.example/a.png' },
       { name: '抱抱', url: 'https://img.example/b.gif' },
     ]);
+  });
+
+  it('serializes edited stickers back to the documented colon format', () => {
+    expect(formatLiteStickerText([{ name: '开心', url: 'https://img.example/a.png' }])).toBe('开心：https://img.example/a.png');
   });
 });

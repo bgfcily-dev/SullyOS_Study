@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLiteBuiltinChatPrompt, buildLiteInteractionGapPrompt, buildLiteRoleContext, buildLiteTimeAwarenessPrompt, formatLiteMessageTime, resolveLiteRolePreset } from './prompts';
+import { buildLiteBuiltinChatPrompt, buildLiteInteractionGapPrompt, buildLiteRoleContext, buildLiteStickerPrompt, buildLiteTimeAwarenessPrompt, formatLiteMessageTime, resolveLiteRolePreset } from './prompts';
 import type { LiteIdentity } from './types';
 
 const identity: LiteIdentity = {
@@ -40,6 +40,13 @@ describe('Sully Lite prompts', () => {
     const result = buildLiteRoleContext(identity);
     expect(result).not.toContain('Lite 聊天行为规范');
     expect(result).not.toContain('不需要事事赞同');
+  });
+
+  it('gives the model original-style sticker commands without exposing URLs', () => {
+    const result = buildLiteStickerPrompt([{ name: '抱抱', url: 'https://private.example/hug.png' }]);
+    expect(result).toContain('[[SEND_EMOJI: 表情名称]]');
+    expect(result).toContain('可用表情包：[抱抱]');
+    expect(result).not.toContain('private.example');
   });
 
   it('adds deterministic local time and human-routine guidance', () => {

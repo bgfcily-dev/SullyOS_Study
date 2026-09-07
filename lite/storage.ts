@@ -159,6 +159,14 @@ export function parseLiteStickerText(value: string): LiteSticker[] {
   return stickers.slice(0, 100);
 }
 
+export function formatLiteStickerText(stickers: LiteSticker[]): string {
+  return stickers
+    .slice(0, 100)
+    .map((sticker) => `${sticker.name.trim()}：${sticker.url.trim()}`)
+    .filter((line) => !line.startsWith('：') && !line.endsWith('：'))
+    .join('\n');
+}
+
 export function loadStickerText(): string {
   return safeGetItem(KEYS.stickers) || '';
 }

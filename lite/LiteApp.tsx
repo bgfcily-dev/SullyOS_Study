@@ -28,6 +28,7 @@ import {
   loadLocalMessages,
   loadStickerText,
   loadTheme,
+  formatLiteStickerText,
   parseLiteStickerText,
   saveApiProfiles,
   saveCloudConfig,
@@ -41,7 +42,7 @@ import {
 import { recallLiteMemories } from './memoryRecall';
 import { inspectLiteVectorStore, prepareLiteContextMemories, testLiteEmbeddingConnection, uploadPreparedLiteMemories } from './memoryTools';
 import { fetchLiteModels } from './modelApi';
-import { splitLiteReply } from './replyChunks';
+import { splitLiteReplyParts } from './replyChunks';
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
@@ -95,6 +96,9 @@ export function LiteApp() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
   const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
+  const [stickerDraftName, setStickerDraftName] = useState('');
+  const [stickerDraftUrl, setStickerDraftUrl] = useState('');
+  const [editingStickerName, setEditingStickerName] = useState<string | null>(null);
   const [memoryPreview, setMemoryPreview] = useState<PreparedLiteMemoryBatch | null>(null);
   const [memoryPreviewNotice, setMemoryPreviewNotice] = useState<Notice>(null);
   const [showSql, setShowSql] = useState(false);
@@ -133,6 +137,23 @@ export function LiteApp() {
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
     return () => { delete document.documentElement.dataset.liteTheme; };
   }, [theme]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateViewportHeight = () => {
+      const height = Math.round(viewport?.height || window.innerHeight);
+      document.documentElement.style.setProperty('--lite-viewport-height', `${height}px`);
+    };
+    updateViewportHeight();
+    window.addEventListener('resize', updateViewportHeight);
+    viewport?.addEventListener('resize', updateViewportHeight);
+    viewport?.addEventListener('scroll', updateViewportHeight);
+    return () => {
+      window.removeEventListener('resize', updateViewportHeight);
+      viewport?.removeEventListener('resize', updateViewportHeight);
+      viewport?.removeEventListener('scroll', updateViewportHeight);
+      document.documentElement.style.removeProperty('--lite-viewport-height');
+    };
+  }, []);
   useEffect(() => {
     const stage = messageStageRef.current;
     if (!stage) return;
@@ -264,11 +285,11 @@ export function LiteApp() {
       } else {
         setLastRecallCount(0);
       }
-      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: activeCloud, localMessages, memories });
-      const replyParts = splitLiteReply(reply);
+      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: activeCloud, localMessages, memories, stickers });
+      const replyParts = splitLiteReplyParts(reply, stickers.map((sticker) => sticker.name));
       const baseTime = Date.now();
-      const replyMessages = replyParts.map((content, index) => ({
-        ...newLiteMessage('assistant', content),
+      const replyMessages = replyParts.map((part, index) => ({
+        ...newLiteMessage('assistant', part.kind === 'sticker' ? `[表情包：${part.name}]` : part.content),
         createdAt: baseTime + index,
       }));
       setLocalMessages((current) => [...current, ...replyMessages]);
@@ -299,6 +320,58 @@ export function LiteApp() {
     };
     reader.onerror = () => setSettingsNotice({ kind: 'error', text: '头像读取失败，请换一张图片' });
     reader.readAsDataURL(file);
+  };
+
+  const resetStickerEditor = () => {
+    setStickerDraftName('');
+    setStickerDraftUrl('');
+    setEditingStickerName(null);
+  };
+
+  const saveStickerDraft = () => {
+    const name = stickerDraftName.trim().slice(0, 40);
+    const url = stickerDraftUrl.trim();
+    if (!name || !url) {
+      setSettingsNotice({ kind: 'error', text: '请同时填写表情包名称和图片 URL' });
+      return;
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('protocol');
+    } catch {
+      setSettingsNotice({ kind: 'error', text: '图片 URL 必须是完整的 http:// 或 https:// 地址' });
+      return;
+    }
+    if (stickers.some((sticker) => sticker.name === name && sticker.name !== editingStickerName)) {
+      setSettingsNotice({ kind: 'error', text: `已经有名为“${name}”的表情包` });
+      return;
+    }
+    const next = editingStickerName
+      ? stickers.map((sticker) => sticker.name === editingStickerName ? { name, url } : sticker)
+      : [...stickers, { name, url }];
+    setStickerText(formatLiteStickerText(next));
+    if (editingStickerName && editingStickerName !== name) {
+      const oldMarker = `[表情包：${editingStickerName}]`;
+      const newMarker = `[表情包：${name}]`;
+      setLocalMessages((current) => current.map((message) => message.content === oldMarker ? { ...message, content: newMarker } : message));
+    }
+    setSettingsNotice({ kind: 'success', text: editingStickerName ? '表情包修改成功' : '表情包添加成功' });
+    resetStickerEditor();
+  };
+
+  const editSticker = (name: string) => {
+    const sticker = stickers.find((item) => item.name === name);
+    if (!sticker) return;
+    setEditingStickerName(sticker.name);
+    setStickerDraftName(sticker.name);
+    setStickerDraftUrl(sticker.url);
+  };
+
+  const deleteSticker = (name: string) => {
+    if (!window.confirm(`确定删除表情包“${name}”吗？已经发出的记录会保留名称。`)) return;
+    setStickerText(formatLiteStickerText(stickers.filter((sticker) => sticker.name !== name)));
+    if (editingStickerName === name) resetStickerEditor();
+    setSettingsNotice({ kind: 'success', text: `已删除表情包“${name}”` });
   };
 
   const syncToCloud = async () => {
@@ -664,9 +737,25 @@ export function LiteApp() {
               <div className="font-preview" style={{ fontSize: `${fontSize}px` }}>这是一段聊天文字预览。</div>
             </div>
             <div className="setting-card appearance-card">
-              <div className="setting-card-title"><div><strong>表情包</strong><p>每行一个，使用“名称：URL”格式。网址中的 https:// 不会被误拆分。</p></div></div>
-              <label>表情包列表<textarea value={stickerText} onChange={(event) => setStickerText(event.target.value)} rows={7} placeholder={'开心：https://example.com/happy.png\n抱抱：https://example.com/hug.gif'} autoCapitalize="none" /></label>
-              <p className="field-hint">已识别 {stickers.length} 个。表情消息只记录名称，不会把图片网址发送给 LLM 或共享上下文。</p>
+              <div className="setting-card-title"><div><strong>表情包</strong><p>模型只会看到名称清单，不会获取图片 URL 或密钥。</p></div></div>
+              <div className="sticker-editor-fields">
+                <label>名称<input value={stickerDraftName} onChange={(event) => setStickerDraftName(event.target.value)} placeholder="例如：开心" /></label>
+                <label>图片 URL<input value={stickerDraftUrl} onChange={(event) => setStickerDraftUrl(event.target.value)} placeholder="https://example.com/happy.png" autoCapitalize="none" /></label>
+              </div>
+              <div className="button-row sticker-editor-actions">
+                {editingStickerName && <button type="button" className="secondary-button" onClick={resetStickerEditor}>取消修改</button>}
+                <button type="button" className="primary-button" onClick={saveStickerDraft}>{editingStickerName ? '保存修改' : '添加表情包'}</button>
+              </div>
+              {stickers.length > 0 ? <div className="sticker-manage-list">
+                {stickers.map((sticker) => <article key={sticker.name}>
+                  <img src={sticker.url} alt="" loading="lazy" />
+                  <div><strong>{sticker.name}</strong><small>{sticker.url}</small></div>
+                  <button type="button" onClick={() => editSticker(sticker.name)}>修改</button>
+                  <button type="button" className="danger" onClick={() => deleteSticker(sticker.name)}>删除</button>
+                </article>)}
+              </div> : <p className="field-hint">还没有表情包。填写名称和图片 URL 后点击添加。</p>}
+              <details className="prompt-preview sticker-bulk-editor"><summary>批量粘贴“名称：URL”</summary><div><textarea value={stickerText} onChange={(event) => setStickerText(event.target.value)} rows={7} placeholder={'开心：https://example.com/happy.png\n抱抱：https://example.com/hug.gif'} autoCapitalize="none" /></div></details>
+              <p className="field-hint">已识别 {stickers.length} 个。角色可用原版命令发送表情包；未知名称会显示成文字，不会变成错误图片。</p>
             </div>
             </>}
 
