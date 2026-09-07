@@ -1,4 +1,6 @@
 import type { LiteIdentity } from './types';
+import type { LiteMessage } from './types';
+import { TIME_FRAMING_CONVERSATIONAL } from '../utils/timeFramingNote';
 
 export const LEGACY_LITE_DEFAULT_PROMPT = '你是用户熟悉且信任的长期聊天伙伴。自然、连贯地延续对话，不要声称自己看到了未提供的信息。';
 
@@ -110,11 +112,43 @@ export function buildLiteBuiltinChatPrompt(): string {
   ].join('\n');
 }
 
-export function buildLiteTimeAwarenessPrompt(now: Date = new Date()): string {
+const routineAnchor = (hour: number): string => {
+  if (hour < 5) return '凌晨：正常情况下多半已经睡下或正在休息；若上下文明确仍醒着，以实际对话为准。';
+  if (hour < 9) return '早晨：通常处于醒来、洗漱、早餐、通勤或开始一天的阶段。';
+  if (hour < 12) return '上午：通常在工作、学习、处理事务或进行角色自己的日常活动。';
+  if (hour < 14) return '中午：通常在吃饭、短暂休息或从上午的事情切换出来。';
+  if (hour < 18) return '下午：通常继续工作、学习、外出办事或投入角色自己的兴趣与任务。';
+  if (hour < 22) return '傍晚至晚上：通常在下班放学、吃饭、回家、社交或进行个人休闲。';
+  return '深夜：通常在收尾、洗漱、放松或准备休息；若正在聊天，清醒聊天本身就是当前事实。';
+};
+
+export function buildLiteInteractionGapPrompt(messages: LiteMessage[]): string {
+  if (messages.length < 2) return '';
+  const current = messages[messages.length - 1];
+  const previous = messages[messages.length - 2];
+  const diffMs = current.createdAt - previous.createdAt;
+  if (!Number.isFinite(diffMs) || diffMs < 10 * 60_000) return '你们刚刚还在连续聊天。';
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `这条消息距离上一条消息约 ${minutes} 分钟，是一段短暂停顿后的继续。`;
+  const hours = Math.floor(diffMs / 3_600_000);
+  if (hours < 24) return `这条消息距离上一条消息约 ${hours} 小时。让这段间隔自然影响重逢感和角色状态。`;
+  const days = Math.floor(hours / 24);
+  return `这条消息距离上一条消息约 ${days} 天。根据关系与上下文自然表现这段久别带来的感受。`;
+}
+
+export function formatLiteMessageTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+export function buildLiteTimeAwarenessPrompt(now: Date = new Date(), messages: LiteMessage[] = []): string {
   const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
   const date = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
-  const time = `${String(now.getHours()).padStart(2, '0')}点${String(now.getMinutes()).padStart(2, '0')}分`;
-  return `### 当前时间感知\n现在是设备当地时间 ${date} ${weekdays[now.getDay()]} ${time}。结合最近上下文、角色自己的生活和正常人类作息，判断这个时段角色大概正在做什么、适合怎样回复。不要机械套用作息，不要编造已确定发生的事情，也不要在回复中主动解释这段时间提示。`;
+  const hour = now.getHours();
+  const time = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const gap = buildLiteInteractionGapPrompt(messages);
+  return `### 当前时间与角色正在进行的生活 (Live Time)\n现在是设备当地时间 ${date} ${weekdays[now.getDay()]} ${time}。\n${gap ? `${gap}\n` : ''}正常人类作息参照：${routineAnchor(hour)}\n\n回复前，先在心里确定：这个角色收到消息前原本正在做哪一件具体的事、身处什么状态、消息怎样打断或融入了这件事。优先遵循角色人设和有时间戳的上下文；上下文没写时，可以根据角色的职业、兴趣和这个时段，合理补全角色自己的日常细节。这是补全角色自己的生活，不是编造和用户共同发生过的事。\n\n让这件正在发生的生活自然渗进语气、反应或顺口提到的细节；不要只复述上下文，也不用每次都直接报时或解释推断过程。${TIME_FRAMING_CONVERSATIONAL}`;
 }
 
 export const LITE_MEMORY_EXTRACTION_RULES = `从最近对话中提取真正值得长期保留的记忆。一个话题通常 1–5 条，琐碎内容不记录，最多 8 条。记忆用角色第一人称“我”书写；房间只能使用客厅、卧室、书房、用户房间、自我房间、阁楼、窗台对应的固定代码。输出必须是 JSON 数组。`;

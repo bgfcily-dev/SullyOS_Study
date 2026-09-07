@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteTimeAwarenessPrompt, resolveLiteRolePreset } from './prompts';
+import { buildLiteBuiltinChatPrompt, buildLiteInteractionGapPrompt, buildLiteRoleContext, buildLiteTimeAwarenessPrompt, formatLiteMessageTime, resolveLiteRolePreset } from './prompts';
 import type { LiteIdentity } from './types';
 
 const identity: LiteIdentity = {
@@ -45,8 +45,18 @@ describe('Sully Lite prompts', () => {
   it('adds deterministic local time and human-routine guidance', () => {
     const result = buildLiteTimeAwarenessPrompt(new Date(2026, 8, 7, 23, 5));
     expect(result).toContain('2026年9月7日');
-    expect(result).toContain('23点05分');
-    expect(result).toContain('正常人类作息');
-    expect(result).toContain('不要机械套用作息');
+    expect(result).toContain('23:05');
+    expect(result).toContain('正常人类作息参照');
+    expect(result).toContain('原本正在做哪一件具体的事');
+    expect(result).toContain('时间是你此刻所处的背景');
+  });
+
+  it('preserves message timestamps and explains a long interaction gap', () => {
+    const messages = [
+      { id: '1', role: 'assistant' as const, content: '之前', createdAt: new Date(2026, 8, 6, 20).getTime(), origin: 'lite' as const },
+      { id: '2', role: 'user' as const, content: '现在', createdAt: new Date(2026, 8, 7, 23).getTime(), origin: 'lite' as const },
+    ];
+    expect(formatLiteMessageTime(messages[1].createdAt)).toBe('2026-09-07 23:00');
+    expect(buildLiteInteractionGapPrompt(messages)).toContain('1 天');
   });
 });
