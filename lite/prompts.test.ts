@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, resolveLiteRolePreset } from './prompts';
+import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteTimeAwarenessPrompt, resolveLiteRolePreset } from './prompts';
 import type { LiteIdentity } from './types';
 
 const identity: LiteIdentity = {
@@ -40,5 +40,13 @@ describe('Sully Lite prompts', () => {
     const result = buildLiteRoleContext(identity);
     expect(result).not.toContain('Lite 聊天行为规范');
     expect(result).not.toContain('不需要事事赞同');
+  });
+
+  it('adds deterministic local time and human-routine guidance', () => {
+    const result = buildLiteTimeAwarenessPrompt(new Date(2026, 8, 7, 23, 5));
+    expect(result).toContain('2026年9月7日');
+    expect(result).toContain('23点05分');
+    expect(result).toContain('正常人类作息');
+    expect(result).toContain('不要机械套用作息');
   });
 });

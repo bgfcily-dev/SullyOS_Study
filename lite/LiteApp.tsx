@@ -7,9 +7,9 @@ import {
   CloudArrowUp,
   Copy,
   GearSix,
-  MagicWand,
   PaperPlaneRight,
   Plus,
+  Smiley,
   Sparkle,
   Trash,
   WarningCircle,
@@ -26,20 +26,23 @@ import {
   loadFontSize,
   loadIdentity,
   loadLocalMessages,
+  loadStickerText,
   loadTheme,
+  parseLiteStickerText,
   saveApiProfiles,
   saveCloudConfig,
   saveEmbeddingConfig,
   saveFontSize,
   saveIdentity,
   saveLocalMessages,
+  saveStickerText,
   saveTheme,
 } from './storage';
 import { recallLiteMemories } from './memoryRecall';
-import { archiveLiteContextToVectors, inspectLiteVectorStore, testLiteEmbeddingConnection } from './memoryTools';
+import { inspectLiteVectorStore, prepareLiteContextMemories, testLiteEmbeddingConnection, uploadPreparedLiteMemories } from './memoryTools';
 import { fetchLiteModels } from './modelApi';
 import { splitLiteReply } from './replyChunks';
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, LiteVectorStats, SharedRecentContext } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
 type SettingsSection = 'api' | 'role' | 'memory' | 'appearance' | 'local';
@@ -75,6 +78,7 @@ export function LiteApp() {
   const [identity, setIdentity] = useState<LiteIdentity>(loadIdentity);
   const [cloudConfig, setCloudConfig] = useState<LiteCloudConfig>(loadCloudConfig);
   const [embeddingConfig, setEmbeddingConfig] = useState<LiteEmbeddingConfig>(loadEmbeddingConfig);
+  const [stickerText, setStickerText] = useState(loadStickerText);
   const [localMessages, setLocalMessages] = useState<LiteMessage[]>(loadLocalMessages);
   const [cloudContext, setCloudContext] = useState<SharedRecentContext | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
@@ -90,9 +94,12 @@ export function LiteApp() {
   const [vectorStats, setVectorStats] = useState<LiteVectorStats | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
+  const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
+  const [memoryPreview, setMemoryPreview] = useState<PreparedLiteMemoryBatch | null>(null);
+  const [memoryPreviewNotice, setMemoryPreviewNotice] = useState<Notice>(null);
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
-  const messageEndRef = useRef<HTMLDivElement>(null);
+  const messageStageRef = useRef<HTMLElement>(null);
   const activeApi = apiProfiles.find((profile) => profile.id === activeApiId) || apiProfiles[0];
   const shownMessages = useMemo(
     () => mergeMessageHistory(cloudContext?.messages || [], localMessages, 100),
@@ -102,6 +109,8 @@ export function LiteApp() {
     const query = modelQuery.trim().toLowerCase();
     return query ? modelOptions.filter((model) => model.toLowerCase().includes(query)) : modelOptions;
   }, [modelOptions, modelQuery]);
+  const stickers = useMemo(() => parseLiteStickerText(stickerText), [stickerText]);
+  const stickerMap = useMemo(() => new Map(stickers.map((sticker) => [sticker.name, sticker.url])), [stickers]);
   const cloudReady = Boolean(cloudConfig.supabaseUrl && cloudConfig.supabaseAnonKey);
 
   useEffect(() => saveApiProfiles(apiProfiles, activeApiId), [apiProfiles, activeApiId]);
@@ -109,6 +118,7 @@ export function LiteApp() {
   useEffect(() => saveCloudConfig(cloudConfig), [cloudConfig]);
   useEffect(() => saveEmbeddingConfig(embeddingConfig), [embeddingConfig]);
   useEffect(() => saveLocalMessages(localMessages), [localMessages]);
+  useEffect(() => saveStickerText(stickerText), [stickerText]);
   useEffect(() => {
     setModelOptions([]);
     setModelPickerOpen(false);
@@ -124,10 +134,13 @@ export function LiteApp() {
     return () => { delete document.documentElement.dataset.liteTheme; };
   }, [theme]);
   useEffect(() => {
-    const target = messageEndRef.current;
-    if (!target || typeof target.scrollIntoView !== 'function') return;
-    try { target.scrollIntoView({ behavior: 'smooth' }); } catch { target.scrollIntoView(); }
-  }, [shownMessages.length, sending]);
+    const stage = messageStageRef.current;
+    if (!stage) return;
+    const frame = window.requestAnimationFrame(() => {
+      stage.scrollTop = stage.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [shownMessages.length]);
 
   const refreshCloud = async (quiet = false) => {
     if (!cloudReady) return null;
@@ -212,7 +225,7 @@ export function LiteApp() {
     if (!content || sending) return;
     setLocalMessages((current) => [...current, newLiteMessage('user', content)]);
     setDraft('');
-    setNotice({ kind: 'info', text: '消息已放入对话。点击旁边的“生成”按钮才会调用 LLM。' });
+    setNotice(null);
   };
 
   const generateReply = async () => {
@@ -355,27 +368,51 @@ export function LiteApp() {
     setArchiveBusy(true);
     setSettingsNotice({ kind: 'info', text: '正在用聊天 API 整理当前上下文…' });
     try {
-      const result = await archiveLiteContextToVectors({
+      const result = await prepareLiteContextMemories({
         api: activeApi,
-        cloud: cloudConfig,
-        embedding: embeddingConfig,
         identity,
         charId: cloudContext?.charId || '',
         messages: shownMessages,
+        extractionPrompt: embeddingConfig.extractionPrompt,
       });
-      if (result.saved === 0) {
+      if (result.memories.length === 0) {
         setSettingsNotice({ kind: 'info', text: `已检查最近 ${result.usedMessages} 条上下文，没有提取到需要长期保留的记忆` });
       } else {
-        try {
-          setVectorStats(await inspectLiteVectorStore(cloudConfig, cloudContext?.charId || ''));
-        } catch { /* the successful write remains successful even if recounting fails */ }
-        setSettingsNotice({ kind: 'success', text: `整理成功：已将 ${result.saved} 条向量记忆写入当前角色` });
+        setMemoryPreview(result);
+        setMemoryPreviewNotice(null);
+        setSettingsNotice({ kind: 'success', text: `已整理出 ${result.memories.length} 条草稿，请预览确认后再上传` });
       }
     } catch (error: any) {
       setSettingsNotice({ kind: 'error', text: error?.message || '当前上下文整理失败' });
     } finally {
       setArchiveBusy(false);
     }
+  };
+
+  const confirmMemoryUpload = async () => {
+    if (!memoryPreview) return;
+    setArchiveBusy(true);
+    setMemoryPreviewNotice({ kind: 'info', text: '正在生成向量并上传…' });
+    setSettingsNotice({ kind: 'info', text: '正在生成向量并上传到 Supabase…' });
+    try {
+      const result = await uploadPreparedLiteMemories({ batch: memoryPreview, cloud: cloudConfig, embedding: embeddingConfig });
+      setMemoryPreview(null);
+      setMemoryPreviewNotice(null);
+      try { setVectorStats(await inspectLiteVectorStore(cloudConfig, cloudContext?.charId || '')); } catch { /* write already succeeded */ }
+      setSettingsNotice({ kind: 'success', text: `上传成功：${result.saved} 条记忆已写入当前角色的云端向量库` });
+    } catch (error: any) {
+      const text = error?.message || '向量记忆上传失败';
+      setMemoryPreviewNotice({ kind: 'error', text });
+      setSettingsNotice({ kind: 'error', text });
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const sendSticker = (name: string) => {
+    setLocalMessages((current) => [...current, newLiteMessage('user', `[表情包：${name}]`)]);
+    setStickerPickerOpen(false);
+    setNotice(null);
   };
 
   const clearCloud = async () => {
@@ -437,7 +474,7 @@ export function LiteApp() {
         </select>
       </section>
 
-      <section className="message-stage" aria-live="polite">
+      <section className="message-stage" aria-live="polite" ref={messageStageRef}>
         {shownMessages.length === 0 ? <div className="empty-card">
           <div className="empty-icon"><Sparkle size={28} weight="fill" /></div>
           <h2>从这里继续</h2>
@@ -447,14 +484,17 @@ export function LiteApp() {
           {cloudContext && cloudContext.messages.length > 0 && (
             <div className="handoff-label"><Cloud size={14} /> 来自 {cloudContext.sourceDeviceName || '其他设备'} 的共享上下文</div>
           )}
-          {shownMessages.map((message) => (
-            <div className={`message-row ${message.role}`} key={message.id}>
-              <article className={`message-bubble ${message.role}`}><p>{message.content}</p></article>
+          {shownMessages.map((message) => {
+            const stickerName = message.content.match(/^\[表情包：(.+)\]$/)?.[1];
+            const stickerUrl = stickerName ? stickerMap.get(stickerName) : undefined;
+            return <div className={`message-row ${message.role}`} key={message.id}>
+              <article className={`message-bubble ${message.role}${stickerUrl ? ' sticker-message' : ''}`}>
+                {stickerUrl ? <img src={stickerUrl} alt={`表情包：${stickerName}`} loading="lazy" /> : <p>{message.content}</p>}
+              </article>
               <time className="message-time">{formatTimestamp(message.createdAt)}</time>
-            </div>
-          ))}
+            </div>;
+          })}
           {sending && <div className="typing-bubble"><i /><i /><i /></div>}
-          <div ref={messageEndRef} />
         </div>}
       </section>
 
@@ -465,6 +505,9 @@ export function LiteApp() {
       </div>}
 
       <form className="composer" onSubmit={sendMessage}>
+        <button className="sticker-button" type="button" aria-label="选择表情包" title="选择表情包" onClick={() => setStickerPickerOpen((open) => !open)} disabled={stickers.length === 0}>
+          <Smiley size={23} />
+        </button>
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
@@ -472,12 +515,10 @@ export function LiteApp() {
           placeholder="说点什么…"
           rows={1}
           aria-label="聊天内容"
+          enterKeyHint="send"
         />
-        <button className="send-button" type="submit" aria-label="发送" disabled={!draft.trim() || sending}>
-          <PaperPlaneRight size={22} weight="fill" />
-        </button>
         <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
-          <MagicWand size={22} weight="fill" />
+          <PaperPlaneRight size={22} weight="fill" />
         </button>
       </form>
 
@@ -510,6 +551,7 @@ export function LiteApp() {
               <button type="button" aria-label="关闭设置提示" onClick={() => setSettingsNotice(null)}><X size={15} /></button>
             </div>}
 
+            <div key={settingsSection} className="settings-section-panel">
             {settingsSection === 'api' && <>
             <div className="setting-card">
               <div className="setting-card-title">
@@ -534,7 +576,7 @@ export function LiteApp() {
                 <button type="button" className="secondary-button" onClick={() => void pullModels()} disabled={modelsBusy}>{modelsBusy ? <ArrowClockwise size={16} className="spin" /> : <ArrowClockwise size={16} />}{modelsBusy ? '正在拉取' : modelOptions.length ? '刷新模型' : '拉取模型'}</button>
                 {modelOptions.length > 0 && <button type="button" className="secondary-button" onClick={() => { setModelQuery(''); setModelPickerOpen(true); }}>选择模型（{modelOptions.length}）</button>}
               </div>
-              <p className="field-hint">“发送”只把消息放进本机对话；只有点击“生成”时，才会使用这里的 API 调用 LLM。</p>
+              <p className="field-hint">在输入框按回车会把消息放进本机对话；只有点击纸飞机“生成”键时，才会调用 LLM。</p>
             </div>
             </>}
 
@@ -599,14 +641,17 @@ export function LiteApp() {
                 {vectorStats.charId && <small>charId：{vectorStats.charId}</small>}
               </div>}
               <button type="button" className="primary-button archive-context-button" onClick={() => void archiveCurrentContext()} disabled={archiveBusy || embeddingTestBusy || vectorInspectBusy}>
-                {archiveBusy ? <ArrowClockwise size={17} className="spin" /> : <Sparkle size={17} weight="fill" />}{archiveBusy ? '正在处理' : '一键把当前上下文整理成向量记忆'}
+                {archiveBusy ? <ArrowClockwise size={17} className="spin" /> : <Sparkle size={17} weight="fill" />}{archiveBusy ? '正在处理' : '整理当前上下文并预览'}
               </button>
-              <p className="field-hint">最多整理当前最近 50 条消息。聊天 API 负责提取，Embedding API 负责向量化，最后直接写入 Supabase 的 <code>memory_vectors</code>。重复处理同一批内容会覆盖同一批记忆，不会无限复制。</p>
+              <label>记忆整理补充要求（可选）<textarea value={embeddingConfig.extractionPrompt} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, extractionPrompt: event.target.value })} rows={4} placeholder="例如：更重视用户的长期计划；不要记录工作细节" /></label>
+              <details className="prompt-preview"><summary>查看内置记忆整理规则</summary><div>从最近 50 条对话中筛选真正值得长期保留的内容，通常提取 1–5 条、最多 8 条；使用角色第一人称，并为每条记忆分配房间、重要性、情绪和标签。固定 JSON 格式由程序维护，补充要求不会覆盖这些结构规则。</div></details>
+              <p className="field-hint">先由聊天 API 整理出草稿并显示预览；只有你点击确认后，才会调用 Embedding API 并写入 Supabase 的 <code>memory_vectors</code>。重复处理同一批内容会覆盖同一批记忆。</p>
               <p className="field-hint">必须与原版创建这些记忆时使用的模型和维度一致。没有填写完整时会跳过记忆检索，但普通聊天仍可继续。</p>
             </div>
             </>}
 
-            {settingsSection === 'appearance' && <div className="setting-card appearance-card">
+            {settingsSection === 'appearance' && <>
+            <div className="setting-card appearance-card">
               <div className="setting-card-title"><strong>外观</strong></div>
               <label>显示模式</label>
               <div className="theme-choice" role="group" aria-label="显示模式">
@@ -617,7 +662,13 @@ export function LiteApp() {
                 <input type="range" min="12" max="20" step="1" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} />
               </label>
               <div className="font-preview" style={{ fontSize: `${fontSize}px` }}>这是一段聊天文字预览。</div>
-            </div>}
+            </div>
+            <div className="setting-card appearance-card">
+              <div className="setting-card-title"><div><strong>表情包</strong><p>每行一个，使用“名称：URL”格式。网址中的 https:// 不会被误拆分。</p></div></div>
+              <label>表情包列表<textarea value={stickerText} onChange={(event) => setStickerText(event.target.value)} rows={7} placeholder={'开心：https://example.com/happy.png\n抱抱：https://example.com/hug.gif'} autoCapitalize="none" /></label>
+              <p className="field-hint">已识别 {stickers.length} 个。表情消息只记录名称，不会把图片网址发送给 LLM 或共享上下文。</p>
+            </div>
+            </>}
 
             {settingsSection === 'local' && <div className="setting-card compact-card">
               <strong>本机记录</strong>
@@ -628,6 +679,7 @@ export function LiteApp() {
                 setSettingsNotice({ kind: 'success', text: '清除成功：本机聊天已清空，云端数据没有改变' });
               }}>清空本机聊天</button>
             </div>}
+            </div>
           </section>
         </div>
       )}
@@ -651,6 +703,35 @@ export function LiteApp() {
                 </button>
               )) : <div className="model-empty">没有匹配的模型</div>}
             </div>
+          </section>
+        </div>
+      )}
+
+      {stickerPickerOpen && (
+        <div className="model-picker-backdrop sticker-picker-backdrop" role="presentation" onMouseDown={() => setStickerPickerOpen(false)}>
+          <section className="sticker-picker" role="dialog" aria-modal="true" aria-labelledby="lite-sticker-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="model-picker-header"><div><span>{stickers.length} 个表情包</span><h2 id="lite-sticker-title">选择表情包</h2></div><button type="button" className="round-action" aria-label="关闭" onClick={() => setStickerPickerOpen(false)}><X size={18} /></button></div>
+            <div className="sticker-grid">
+              {stickers.map((sticker) => <button type="button" key={sticker.name} onClick={() => sendSticker(sticker.name)}><img src={sticker.url} alt="" loading="lazy" /><span>{sticker.name}</span></button>)}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {memoryPreview && (
+        <div className="model-picker-backdrop memory-preview-backdrop" role="presentation" onMouseDown={() => { if (!archiveBusy) { setMemoryPreview(null); setMemoryPreviewNotice(null); } }}>
+          <section className="memory-preview" role="dialog" aria-modal="true" aria-labelledby="lite-memory-preview-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="model-picker-header"><div><span>尚未上传</span><h2 id="lite-memory-preview-title">确认记忆内容</h2></div><button type="button" className="round-action" aria-label="关闭" disabled={archiveBusy} onClick={() => { setMemoryPreview(null); setMemoryPreviewNotice(null); }}><X size={18} /></button></div>
+            <p className="memory-preview-hint">请先检查下面 {memoryPreview.memories.length} 条内容。点击确认上传前，云端不会发生变化。</p>
+            {memoryPreviewNotice && <div className={`settings-feedback ${memoryPreviewNotice.kind}`} role="status"><span>{memoryPreviewNotice.text}</span></div>}
+            <div className="memory-preview-list">
+              {memoryPreview.memories.map((memory, index) => <article key={`${memory.room}-${index}`}>
+                <div><span>{memory.room}</span><b>重要性 {memory.importance}</b></div>
+                <p>{memory.content}</p>
+                {memory.tags.length > 0 && <small>{memory.tags.join(' · ')}</small>}
+              </article>)}
+            </div>
+            <div className="preview-actions"><button type="button" className="secondary-button" disabled={archiveBusy} onClick={() => { setMemoryPreview(null); setMemoryPreviewNotice(null); }}>取消</button><button type="button" className="primary-button" disabled={archiveBusy} onClick={() => void confirmMemoryUpload()}>{archiveBusy ? <ArrowClockwise size={17} className="spin" /> : <CloudArrowUp size={17} />}{archiveBusy ? '正在上传' : '确认并上传'}</button></div>
           </section>
         </div>
       )}

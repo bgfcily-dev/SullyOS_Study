@@ -29,6 +29,28 @@ export interface LiteEmbeddingConfig {
   apiKey: string;
   model: string;
   dimensions: number;
+  extractionPrompt: string;
+}
+
+export interface LiteMemoryDraft {
+  content: string;
+  room: 'living_room' | 'bedroom' | 'study' | 'user_room' | 'self_room' | 'attic' | 'windowsill';
+  importance: number;
+  mood: string;
+  tags: string[];
+}
+
+export interface PreparedLiteMemoryBatch {
+  memories: LiteMemoryDraft[];
+  charId: string;
+  contextSignature: string;
+  createdAt: number;
+  usedMessages: number;
+}
+
+export interface LiteSticker {
+  name: string;
+  url: string;
 }
 
 export interface LiteMemoryRecall {

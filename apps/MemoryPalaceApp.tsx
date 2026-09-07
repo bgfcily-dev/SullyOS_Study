@@ -891,6 +891,7 @@ export default function MemoryPalaceApp() {
     const [rvTestResult, setRvTestResult] = useState('');
     const [rvTesting, setRvTesting] = useState(false);
     const [rvSyncing, setRvSyncing] = useState(false);
+    const [rvReceiving, setRvReceiving] = useState(false);
     const [showInitSQL, setShowInitSQL] = useState(false);
 
     // 全局配置变更时同步到本地状态
@@ -1770,6 +1771,52 @@ export default function MemoryPalaceApp() {
             addToast(`同步完成: ${result.synced} 条成功, ${result.failed} 条失败`, result.failed > 0 ? 'error' : 'success');
         } catch (e: any) { addToast(`同步失败: ${e.message}`, 'error'); }
         setRvSyncing(false);
+    };
+
+    // 远程向量：只补充到本机，不删除或覆盖已有记忆
+    const handleReceiveFromRemote = async () => {
+        if (!char) return;
+        setRvReceiving(true);
+        try {
+            const [{ fetchRemoteVectorsForCharacter }, { MemoryNodeDB, MemoryVectorDB }] = await Promise.all([
+                import('../utils/memoryPalace/supabaseVector'),
+                import('../utils/memoryPalace/db'),
+            ]);
+            const [existingNodes, existingVectors] = await Promise.all([
+                MemoryNodeDB.getByCharId(char.id),
+                MemoryVectorDB.getAllByCharId(char.id),
+            ]);
+            const nodeIds = new Set(existingNodes.map(node => node.id));
+            const vectorIds = new Set(existingVectors.map(vector => vector.memoryId));
+            let addedNodes = 0;
+            let addedVectors = 0;
+            const result = await fetchRemoteVectorsForCharacter(remoteVectorConfig, char.id, async rows => {
+                const newNodes = rows.filter(row => !nodeIds.has(row.node.id)).map(row => row.node);
+                const newVectors = rows.filter(row => !vectorIds.has(row.node.id)).map(row => ({
+                    memoryId: row.node.id,
+                    charId: char.id,
+                    vector: row.vector,
+                    dimensions: row.dimensions,
+                    model: row.model,
+                }));
+                if (newNodes.length > 0) {
+                    await MemoryNodeDB.saveMany(newNodes);
+                    newNodes.forEach(node => nodeIds.add(node.id));
+                    addedNodes += newNodes.length;
+                }
+                if (newVectors.length > 0) {
+                    await MemoryVectorDB.saveMany(newVectors);
+                    newVectors.forEach(vector => vectorIds.add(vector.memoryId));
+                    addedVectors += newVectors.length;
+                }
+            });
+            await loadStats();
+            const invalidText = result.invalid > 0 ? `，另有 ${result.invalid} 条向量格式无效未导入` : '';
+            addToast(`接收完成：新增 ${addedNodes} 条本机记忆、${addedVectors} 条向量${invalidText}`, result.invalid > 0 ? 'info' : 'success');
+        } catch (e: any) {
+            addToast(`接收失败: ${e.message}`, 'error');
+        }
+        setRvReceiving(false);
     };
 
     // 远程向量：复制初始化 SQL
@@ -3814,19 +3861,37 @@ create table if not exists memory_vectors (
 
                     {/* 已启用后的操作 */}
                     {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (
-                        <button onClick={handleSyncToRemote} disabled={rvSyncing}
+                        <button onClick={handleSyncToRemote} disabled={rvSyncing || rvReceiving}
                             style={{
                                 width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 12,
                                 border: '1px solid #e9d5ff', fontWeight: 600, fontSize: 12,
                                 color: '#7c3aed', background: 'white',
-                                cursor: rvSyncing ? 'not-allowed' : 'pointer',
-                                opacity: rvSyncing ? 0.5 : 1,
+                                cursor: (rvSyncing || rvReceiving) ? 'not-allowed' : 'pointer',
+                                opacity: (rvSyncing || rvReceiving) ? 0.5 : 1,
                             }}
                         >
                             {rvSyncing ? '同步中...' : (
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                                     <Icon name="refresh" size={13} />
                                     <span>同步本地向量到远程</span>
+                                </span>
+                            )}
+                        </button>
+                    )}
+                    {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (
+                        <button onClick={handleReceiveFromRemote} disabled={rvReceiving || rvSyncing}
+                            style={{
+                                width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 12,
+                                border: '1px solid #ddd6fe', fontWeight: 600, fontSize: 12,
+                                color: '#6d28d9', background: '#fafafa',
+                                cursor: (rvReceiving || rvSyncing) ? 'not-allowed' : 'pointer',
+                                opacity: (rvReceiving || rvSyncing) ? 0.5 : 1,
+                            }}
+                        >
+                            {rvReceiving ? '正在接收并本地化...' : (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                    <Icon name="download" size={13} />
+                                    <span>接收远程记忆到本机</span>
                                 </span>
                             )}
                         </button>

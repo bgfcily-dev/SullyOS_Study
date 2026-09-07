@@ -109,3 +109,12 @@ export function buildLiteBuiltinChatPrompt(): string {
     ]),
   ].join('\n');
 }
+
+export function buildLiteTimeAwarenessPrompt(now: Date = new Date()): string {
+  const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  const date = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
+  const time = `${String(now.getHours()).padStart(2, '0')}点${String(now.getMinutes()).padStart(2, '0')}分`;
+  return `### 当前时间感知\n现在是设备当地时间 ${date} ${weekdays[now.getDay()]} ${time}。结合最近上下文、角色自己的生活和正常人类作息，判断这个时段角色大概正在做什么、适合怎样回复。不要机械套用作息，不要编造已确定发生的事情，也不要在回复中主动解释这段时间提示。`;
+}
+
+export const LITE_MEMORY_EXTRACTION_RULES = `从最近对话中提取真正值得长期保留的记忆。一个话题通常 1–5 条，琐碎内容不记录，最多 8 条。记忆用角色第一人称“我”书写；房间只能使用客厅、卧室、书房、用户房间、自我房间、阁楼、窗台对应的固定代码。输出必须是 JSON 数组。`;

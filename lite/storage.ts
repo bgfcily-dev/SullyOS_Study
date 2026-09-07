@@ -1,4 +1,4 @@
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage, LiteTheme } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage, LiteSticker, LiteTheme } from './types';
 import { LOCAL_MESSAGE_LIMIT, normalizeMessages } from './context';
 import { LEGACY_LITE_DEFAULT_PROMPT, LEGACY_LITE_ROLE_PRESET_TEMPLATE, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
 
@@ -12,6 +12,7 @@ const KEYS = {
   messages: 'sully_lite_messages_v1',
   fontSize: 'sully_lite_font_size_v1',
   theme: 'sully_lite_theme_v1',
+  stickers: 'sully_lite_stickers_v1',
 };
 
 const createDeviceId = (): string => typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -139,7 +140,31 @@ export function loadEmbeddingConfig(): LiteEmbeddingConfig {
     apiKey,
     model,
     dimensions: Number.isFinite(dimensions) && dimensions > 0 ? dimensions : 1024,
+    extractionPrompt: String(saved?.extractionPrompt || ''),
   };
+}
+
+export function parseLiteStickerText(value: string): LiteSticker[] {
+  const seen = new Set<string>();
+  const stickers: LiteSticker[] = [];
+  for (const line of value.split(/\r?\n/)) {
+    const match = line.trim().match(/^(.+?)[：:]\s*(https?:\/\/\S+)$/i);
+    if (!match) continue;
+    const name = match[1].trim().slice(0, 40);
+    const url = match[2].trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    stickers.push({ name, url });
+  }
+  return stickers.slice(0, 100);
+}
+
+export function loadStickerText(): string {
+  return safeGetItem(KEYS.stickers) || '';
+}
+
+export function saveStickerText(value: string): void {
+  safeSetItem(KEYS.stickers, value);
 }
 
 export function saveEmbeddingConfig(config: LiteEmbeddingConfig): void {

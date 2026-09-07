@@ -535,6 +535,97 @@ export async function getVectorCount(config: RemoteVectorConfig, charId?: string
     }
 }
 
+export interface RemoteVectorSnapshot {
+    node: MemoryNode;
+    vector: Float32Array;
+    dimensions: number;
+    model?: string;
+}
+
+/** 把 PostgREST 返回的 pgvector 文本安全还原成 Float32Array。 */
+export function parseRemoteVector(value: unknown): Float32Array | null {
+    if (Array.isArray(value)) {
+        const numbers = value.map(Number);
+        return numbers.length > 0 && numbers.every(Number.isFinite) ? new Float32Array(numbers) : null;
+    }
+    if (typeof value !== 'string') return null;
+    const clean = value.trim().replace(/^\[/, '').replace(/\]$/, '');
+    if (!clean) return null;
+    const numbers = clean.split(',').map(Number);
+    return numbers.every(Number.isFinite) ? new Float32Array(numbers) : null;
+}
+
+/**
+ * 分页读取某个角色的远程向量，供原版显式接收并本地化。
+ * 只读取，不删除远程数据；由调用方决定如何与本机数据合并。
+ */
+export async function fetchRemoteVectorsForCharacter(
+    config: RemoteVectorConfig,
+    charId: string,
+    onBatch?: (rows: RemoteVectorSnapshot[], fetched: number) => void | Promise<void>,
+): Promise<{ fetched: number; invalid: number }> {
+    const cleanCharId = charId.trim();
+    if (!cleanCharId) throw new Error('缺少角色 ID');
+    const pageSize = 250;
+    let offset = 0;
+    let fetched = 0;
+    let invalid = 0;
+    while (true) {
+        const params = new URLSearchParams({
+            select: 'memory_id,char_id,content,vector,dimensions,model,room,importance,tags,mood,valence,arousal,created_at,last_accessed_at,access_count,pinned_until,source_id,origin,archived,is_summary,event_box_id',
+            char_id: `eq.${cleanCharId}`,
+            order: 'memory_id.asc',
+            limit: String(pageSize),
+            offset: String(offset),
+        });
+        const res = await fetch(restUrl(config, `/memory_vectors?${params.toString()}`), { headers: headers(config) });
+        if (!res.ok) throw new Error(`读取远程向量失败（HTTP ${res.status}）`);
+        const rawRows = await res.json() as any[];
+        const rows: RemoteVectorSnapshot[] = [];
+        for (const row of rawRows || []) {
+            const vector = parseRemoteVector(row.vector);
+            const memoryId = String(row.memory_id || '').trim();
+            if (!vector || !memoryId) { invalid += 1; continue; }
+            const dimensions = Number(row.dimensions) || vector.length;
+            if (dimensions !== vector.length) { invalid += 1; continue; }
+            const allowedRooms = new Set(['living_room', 'bedroom', 'study', 'user_room', 'self_room', 'attic', 'windowsill']);
+            const room = allowedRooms.has(row.room) ? row.room : 'living_room';
+            const createdAt = Number(row.created_at) || Date.now();
+            rows.push({
+                node: {
+                    id: memoryId,
+                    charId: cleanCharId,
+                    content: String(row.content || ''),
+                    room: room as MemoryNode['room'],
+                    tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+                    importance: Math.max(1, Math.min(10, Number(row.importance) || 5)),
+                    mood: String(row.mood || ''),
+                    valence: typeof row.valence === 'number' ? row.valence : undefined,
+                    arousal: typeof row.arousal === 'number' ? row.arousal : undefined,
+                    embedded: true,
+                    createdAt,
+                    lastAccessedAt: Number(row.last_accessed_at) || createdAt,
+                    accessCount: Number(row.access_count) || 0,
+                    pinnedUntil: row.pinned_until == null ? null : Number(row.pinned_until),
+                    sourceId: row.source_id ?? null,
+                    origin: row.origin || undefined,
+                    archived: !!row.archived,
+                    isBoxSummary: !!row.is_summary,
+                    eventBoxId: row.event_box_id ?? null,
+                },
+                vector,
+                dimensions,
+                model: row.model || undefined,
+            });
+        }
+        fetched += rows.length;
+        if (rows.length > 0) await onBatch?.(rows, fetched);
+        if (!rawRows || rawRows.length < pageSize) break;
+        offset += pageSize;
+    }
+    return { fetched, invalid };
+}
+
 /**
  * 将本地向量同步到远程（一次性迁移）
  */
