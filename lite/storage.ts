@@ -11,6 +11,7 @@ const KEYS = {
   embedding: 'sully_lite_embedding_v1',
   identity: 'sully_lite_identity_v1',
   messages: 'sully_lite_messages_v1',
+  deletedMessageIds: 'sully_lite_deleted_message_ids_v1',
   memorySummaryApi: 'sully_lite_memory_summary_api_v1',
   fontSize: 'sully_lite_font_size_v1',
   theme: 'sully_lite_theme_v1',
@@ -243,4 +244,14 @@ export function loadLocalMessages(): LiteMessage[] {
 
 export function saveLocalMessages(messages: LiteMessage[]): void {
   safeSetItem(KEYS.messages, JSON.stringify(messages.slice(-LOCAL_MESSAGE_LIMIT)));
+}
+
+export function loadDeletedMessageIds(): string[] {
+  const saved = readJson<unknown>(KEYS.deletedMessageIds);
+  if (!Array.isArray(saved)) return [];
+  return [...new Set(saved.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))].slice(-200);
+}
+
+export function saveDeletedMessageIds(ids: string[]): void {
+  safeSetItem(KEYS.deletedMessageIds, JSON.stringify([...new Set(ids)].slice(-200)));
 }

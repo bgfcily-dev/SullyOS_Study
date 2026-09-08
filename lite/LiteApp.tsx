@@ -26,6 +26,7 @@ import {
   loadApiProfiles,
   loadChatBackground,
   loadCloudConfig,
+  loadDeletedMessageIds,
   loadEmbeddingConfig,
   loadFontSize,
   loadIdentity,
@@ -38,6 +39,7 @@ import {
   saveApiProfiles,
   saveChatBackground,
   saveCloudConfig,
+  saveDeletedMessageIds,
   saveEmbeddingConfig,
   saveFontSize,
   saveIdentity,
@@ -129,6 +131,7 @@ export function LiteApp() {
   const [chatBackground, setChatBackground] = useState(loadChatBackground);
   const [stickerText, setStickerText] = useState(loadStickerText);
   const [localMessages, setLocalMessages] = useState<LiteMessage[]>(loadLocalMessages);
+  const [deletedMessageIds, setDeletedMessageIds] = useState<string[]>(loadDeletedMessageIds);
   const [cloudContext, setCloudContext] = useState<SharedRecentContext | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [sending, setSending] = useState(false);
@@ -148,6 +151,7 @@ export function LiteApp() {
   const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
   const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const [stickerEditor, setStickerEditor] = useState<StickerEditor | null>(null);
+  const [messageEditor, setMessageEditor] = useState<LiteMessage | null>(null);
   const [memoryPreview, setMemoryPreview] = useState<PreparedLiteMemoryBatch | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
@@ -156,11 +160,17 @@ export function LiteApp() {
   const stickerUrlRef = useRef<HTMLInputElement>(null);
   const stickerBulkRef = useRef<HTMLTextAreaElement>(null);
   const stickerLongPressTimerRef = useRef<number | null>(null);
+  const messageLongPressTimerRef = useRef<number | null>(null);
+  const messagePointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const messageContentRef = useRef<HTMLTextAreaElement>(null);
   const suppressStickerClickRef = useRef(false);
   const activeApi = apiProfiles.find((profile) => profile.id === activeApiId) || apiProfiles[0];
+  const deletedMessageIdSet = useMemo(() => new Set(deletedMessageIds), [deletedMessageIds]);
+  const visibleLocalMessages = useMemo(() => localMessages.filter((message) => !deletedMessageIdSet.has(message.id)), [deletedMessageIdSet, localMessages]);
+  const visibleCloudMessages = useMemo(() => (cloudContext?.messages || []).filter((message) => !deletedMessageIdSet.has(message.id)), [cloudContext, deletedMessageIdSet]);
   const shownMessages = useMemo(
-    () => mergeMessageHistory(cloudContext?.messages || [], localMessages, 100),
-    [cloudContext, localMessages],
+    () => mergeMessageHistory(visibleCloudMessages, visibleLocalMessages, 100),
+    [visibleCloudMessages, visibleLocalMessages],
   );
   const filteredModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
@@ -180,6 +190,7 @@ export function LiteApp() {
   useEffect(() => saveCloudConfig(cloudConfig), [cloudConfig]);
   useEffect(() => saveEmbeddingConfig(embeddingConfig), [embeddingConfig]);
   useEffect(() => saveLocalMessages(localMessages), [localMessages]);
+  useEffect(() => saveDeletedMessageIds(deletedMessageIds), [deletedMessageIds]);
   useEffect(() => saveStickerText(stickerText), [stickerText]);
   useEffect(() => {
     if (!notice) return;
@@ -206,10 +217,6 @@ export function LiteApp() {
       const height = Math.round(viewport?.height || window.innerHeight);
       document.documentElement.style.setProperty('--lite-viewport-height', `${height}px`);
       document.documentElement.style.setProperty('--lite-viewport-offset-top', `${Math.round(viewport?.offsetTop || 0)}px`);
-      window.requestAnimationFrame(() => {
-        const stage = messageStageRef.current;
-        if (stage) stage.scrollTop = stage.scrollHeight;
-      });
     };
     updateViewportHeight();
     window.addEventListener('resize', updateViewportHeight);
@@ -365,12 +372,16 @@ export function LiteApp() {
     try {
       const latestCloud = cloudReady ? await refreshCloud(true) : cloudContext;
       const activeCloud = latestCloud || cloudContext;
+      const visibleActiveCloud = activeCloud ? {
+        ...activeCloud,
+        messages: activeCloud.messages.filter((message) => !deletedMessageIdSet.has(message.id)),
+      } : null;
       let memories: LiteMemoryRecall[] = [];
-      if (activeCloud?.charId && cloudReady && embeddingConfig.enabled) {
+      if (visibleActiveCloud?.charId && cloudReady && embeddingConfig.enabled) {
         try {
           memories = await recallLiteMemories({
-            charId: activeCloud.charId,
-            messages: mergeMessageHistory(activeCloud.messages, localMessages, 50),
+            charId: visibleActiveCloud.charId,
+            messages: mergeMessageHistory(visibleActiveCloud.messages, visibleLocalMessages, 50),
             cloud: cloudConfig,
             embedding: embeddingConfig,
           });
@@ -382,7 +393,7 @@ export function LiteApp() {
       } else {
         setLastRecallCount(0);
       }
-      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: activeCloud, localMessages, memories, stickers });
+      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: visibleLocalMessages, memories, stickers });
       const replyParts = splitLiteReplyParts(reply, stickers.map((sticker) => sticker.name));
       const baseTime = Date.now();
       const replyMessages = replyParts.map((part, index) => ({
@@ -483,6 +494,55 @@ export function LiteApp() {
     stickerLongPressTimerRef.current = null;
   };
 
+  const cancelMessageLongPress = () => {
+    if (messageLongPressTimerRef.current != null) window.clearTimeout(messageLongPressTimerRef.current);
+    messageLongPressTimerRef.current = null;
+    messagePointerStartRef.current = null;
+  };
+
+  const beginMessageLongPress = (message: LiteMessage, event: React.PointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    cancelMessageLongPress();
+    messagePointerStartRef.current = { x: event.clientX, y: event.clientY };
+    messageLongPressTimerRef.current = window.setTimeout(() => {
+      messageLongPressTimerRef.current = null;
+      messagePointerStartRef.current = null;
+      setMessageEditor(message);
+    }, 520);
+  };
+
+  const moveMessagePointer = (event: React.PointerEvent) => {
+    const start = messagePointerStartRef.current;
+    if (!start) return;
+    if (Math.abs(event.clientX - start.x) > 8 || Math.abs(event.clientY - start.y) > 8) cancelMessageLongPress();
+  };
+
+  const saveEditedMessage = () => {
+    if (!messageEditor) return;
+    const content = messageContentRef.current?.value.trim() || '';
+    if (!content) {
+      setNotice({ kind: 'error', text: '消息内容不能为空；如果不需要这条消息，可以点击删除' });
+      return;
+    }
+    setLocalMessages((current) => {
+      const edited = { ...messageEditor, content };
+      const exists = current.some((message) => message.id === edited.id);
+      return exists ? current.map((message) => message.id === edited.id ? edited : message) : [...current, edited];
+    });
+    setDeletedMessageIds((current) => current.filter((id) => id !== messageEditor.id));
+    setMessageEditor(null);
+    setNotice({ kind: 'success', text: '消息已修改；下次同步近期上下文时会带上修改' });
+  };
+
+  const deleteMessage = () => {
+    if (!messageEditor) return;
+    const id = messageEditor.id;
+    setLocalMessages((current) => current.filter((message) => message.id !== id));
+    setDeletedMessageIds((current) => current.includes(id) ? current : [...current, id]);
+    setMessageEditor(null);
+    setNotice({ kind: 'success', text: '消息已删除；下次同步近期上下文时会带上修改' });
+  };
+
   const selectBackground = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -515,11 +575,12 @@ export function LiteApp() {
       const next = await publishSharedContext({
         config: cloudConfig,
         charId: latestCloud?.charId || cloudContext?.charId || '',
-        sharedMessages: latestCloud?.messages || [],
-        localMessages,
+        sharedMessages: (latestCloud?.messages || []).filter((message) => !deletedMessageIdSet.has(message.id)),
+        localMessages: visibleLocalMessages,
         previousRevision: latestCloud?.revision || 0,
       });
       setCloudContext(next);
+      setDeletedMessageIds([]);
       setSettingsNotice({ kind: 'success', text: `同步成功：已发布第 ${next.revision} 版共享上下文` });
     } catch (error: any) {
       setSettingsNotice({ kind: 'error', text: error?.message || '同步失败' });
@@ -686,7 +747,7 @@ export function LiteApp() {
       </section>
 
       <section
-        className={`message-stage${chatBackground ? ' has-chat-background' : ''}`}
+        className={`message-stage${chatBackground ? ' has-chat-background' : ''}${shownMessages.length === 0 ? ' is-empty' : ''}`}
         aria-live="polite"
         ref={messageStageRef}
         style={chatBackground ? { backgroundImage: `linear-gradient(rgba(20, 20, 20, .08), rgba(20, 20, 20, .08)), url(${chatBackground})` } : undefined}
@@ -697,14 +758,30 @@ export function LiteApp() {
           <p>连接主脑后，这里会自动读取你手动同步的近期上下文，再和当前设备上的对话一起发送给角色。</p>
           <button type="button" onClick={() => openSettings('api', 'quick')}>完成首次设置</button>
         </div> : <div className="message-list">
-          {cloudContext && cloudContext.messages.length > 0 && (
+          {cloudContext && visibleCloudMessages.length > 0 && (
             <div className="handoff-label"><Cloud size={14} /> 来自 {cloudContext.sourceDeviceName || '其他设备'} 的共享上下文</div>
           )}
           {shownMessages.map((message) => {
             const stickerName = message.content.match(/^\[表情包：(.+)\]$/)?.[1];
             const stickerUrl = stickerName ? stickerMap.get(stickerName) : undefined;
             return <div className={`message-row ${message.role}`} key={message.id}>
-              <article className={`message-bubble ${message.role}${stickerUrl ? ' sticker-message' : ''}`}>
+              <article
+                className={`message-bubble ${message.role}${stickerUrl ? ' sticker-message' : ''}`}
+                tabIndex={0}
+                aria-label={`${message.role === 'user' ? '用户' : '角色'}消息，长按可编辑或删除`}
+                onPointerDown={(event) => beginMessageLongPress(message, event)}
+                onPointerMove={moveMessagePointer}
+                onPointerUp={cancelMessageLongPress}
+                onPointerCancel={cancelMessageLongPress}
+                onPointerLeave={cancelMessageLongPress}
+                onContextMenu={(event) => { event.preventDefault(); cancelMessageLongPress(); setMessageEditor(message); }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setMessageEditor(message);
+                  }
+                }}
+              >
                 {stickerUrl ? <img src={stickerUrl} alt={`表情包：${stickerName}`} loading="lazy" /> : <p>{message.content}</p>}
               </article>
               <time className="message-time">{formatTimestamp(message.createdAt)}</time>
@@ -976,6 +1053,19 @@ export function LiteApp() {
                 <button type="button" className="primary-button" onClick={saveEditedSticker}>保存修改</button>
               </div>
             </>}
+          </section>
+        </div>
+      )}
+
+      {messageEditor && (
+        <div className="model-picker-backdrop" role="presentation" onMouseDown={() => setMessageEditor(null)}>
+          <section key={messageEditor.id} className="sticker-editor-dialog message-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="lite-message-editor-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="model-picker-header"><div><span>修改后保存在当前设备</span><h2 id="lite-message-editor-title">编辑消息</h2></div><button type="button" className="round-action" aria-label="关闭" onClick={() => setMessageEditor(null)}><X size={18} /></button></div>
+            <label>消息内容<textarea ref={messageContentRef} rows={6} defaultValue={messageEditor.content} autoFocus /></label>
+            <div className="sticker-editor-footer">
+              <button type="button" className="danger-link" onClick={deleteMessage}>删除这条消息</button>
+              <button type="button" className="primary-button" onClick={saveEditedMessage}>保存修改</button>
+            </div>
           </section>
         </div>
       )}

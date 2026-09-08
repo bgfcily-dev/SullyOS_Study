@@ -3,7 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_LITE_DEFAULT_PROMPT } from './prompts';
-import { formatLiteStickerText, loadApiProfiles, loadChatBackground, loadCloudConfig, loadEmbeddingConfig, loadIdentity, loadMemorySummaryApi, parseLiteStickerText, saveChatBackground, saveMemorySummaryApi, saveTheme } from './storage';
+import { formatLiteStickerText, loadApiProfiles, loadChatBackground, loadCloudConfig, loadDeletedMessageIds, loadEmbeddingConfig, loadIdentity, loadMemorySummaryApi, parseLiteStickerText, saveChatBackground, saveDeletedMessageIds, saveMemorySummaryApi, saveTheme } from './storage';
 
 describe('Sully Lite storage isolation', () => {
   beforeEach(() => localStorage.clear());
@@ -64,5 +64,10 @@ describe('Sully Lite storage isolation', () => {
   it('stores the custom chat background only in Lite local storage', () => {
     saveChatBackground('data:image/jpeg;base64,abc');
     expect(loadChatBackground()).toBe('data:image/jpeg;base64,abc');
+  });
+
+  it('stores unique deleted message ids for cloud-message overrides', () => {
+    saveDeletedMessageIds(['cloud-1', 'cloud-1', 'lite-2']);
+    expect(loadDeletedMessageIds()).toEqual(['cloud-1', 'lite-2']);
   });
 });
