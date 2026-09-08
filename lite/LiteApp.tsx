@@ -720,8 +720,8 @@ export function LiteApp() {
       </div>}
 
       {composerMenuOpen && <section className="composer-tray function-tray" aria-label="快捷功能">
-        <button type="button" onClick={() => openSettings('api', 'quick')}><GearSix size={21} /><span>API 配置</span></button>
-        <button type="button" onClick={() => openSettings('appearance', 'quick')}><Palette size={21} /><span>外观</span></button>
+        <button type="button" aria-label="打开 API 设置" title="API 设置" onClick={() => openSettings('api', 'quick')}><GearSix size={21} /></button>
+        <button type="button" aria-label="打开外观设置" title="外观设置" onClick={() => openSettings('appearance', 'quick')}><Palette size={21} /></button>
       </section>}
 
       {stickerPickerOpen && <section className="composer-tray sticker-tray" aria-label="表情包">
@@ -776,18 +776,15 @@ export function LiteApp() {
             <div className="sheet-title-row">
               <div>
                 <span className="eyebrow">LIGHT CLIENT</span>
-                <h2 id="lite-settings-title">{settingsScope === 'main' ? '角色与记忆' : '快捷设置'}</h2>
+                <h2 id="lite-settings-title">{settingsScope === 'main' ? '角色与记忆' : settingsSection === 'api' ? 'API 配置' : '外观'}</h2>
               </div>
               <button type="button" className="text-button" onClick={() => setSettingsOpen(false)}>完成</button>
             </div>
-            <nav className="settings-tabs" aria-label="设置分区">
-              {(settingsScope === 'main'
-                ? ([['role', '角色设置'], ['memory', '向量记忆']] as const)
-                : ([['api', 'API 配置'], ['appearance', '外观']] as const)
-              ).map(([section, label]) => (
+            {settingsScope === 'main' && <nav className="settings-tabs" aria-label="设置分区">
+              {([['role', '角色设置'], ['memory', '向量记忆']] as const).map(([section, label]) => (
                 <button key={section} type="button" className={settingsSection === section ? 'active' : ''} onClick={() => setSettingsSection(section)}>{label}</button>
               ))}
-            </nav>
+            </nav>}
 
             <div key={settingsSection} className="settings-section-panel">
             {settingsSection === 'api' && <>
