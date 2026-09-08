@@ -11,6 +11,12 @@ export interface LiteApiProfile {
   model: string;
 }
 
+export interface LiteMemorySummaryApi {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 export interface LiteIdentity {
   characterName: string;
   characterAvatar: string;

@@ -3,7 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_LITE_DEFAULT_PROMPT } from './prompts';
-import { formatLiteStickerText, loadApiProfiles, loadCloudConfig, loadEmbeddingConfig, loadIdentity, parseLiteStickerText, saveTheme } from './storage';
+import { formatLiteStickerText, loadApiProfiles, loadChatBackground, loadCloudConfig, loadEmbeddingConfig, loadIdentity, loadMemorySummaryApi, parseLiteStickerText, saveChatBackground, saveMemorySummaryApi, saveTheme } from './storage';
 
 describe('Sully Lite storage isolation', () => {
   beforeEach(() => localStorage.clear());
@@ -53,5 +53,16 @@ describe('Sully Lite storage isolation', () => {
 
   it('serializes edited stickers back to the documented colon format', () => {
     expect(formatLiteStickerText([{ name: '开心', url: 'https://img.example/a.png' }])).toBe('开心：https://img.example/a.png');
+  });
+
+  it('keeps the optional memory-summary API separate from the chat API', () => {
+    saveMemorySummaryApi({ baseUrl: 'https://cheap.example/v1/', apiKey: 'memory-key', model: 'cheap-model' });
+    expect(loadMemorySummaryApi()).toEqual({ baseUrl: 'https://cheap.example/v1', apiKey: 'memory-key', model: 'cheap-model' });
+    expect(loadApiProfiles()[0]).toMatchObject({ baseUrl: '', apiKey: '', model: '' });
+  });
+
+  it('stores the custom chat background only in Lite local storage', () => {
+    saveChatBackground('data:image/jpeg;base64,abc');
+    expect(loadChatBackground()).toBe('data:image/jpeg;base64,abc');
   });
 });

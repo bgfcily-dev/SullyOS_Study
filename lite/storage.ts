@@ -1,15 +1,17 @@
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMessage, LiteSticker, LiteTheme } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemorySummaryApi, LiteMessage, LiteSticker, LiteTheme } from './types';
 import { LOCAL_MESSAGE_LIMIT, normalizeMessages } from './context';
 import { LEGACY_LITE_DEFAULT_PROMPT, LEGACY_LITE_ROLE_PRESET_TEMPLATE, LITE_ROLE_PRESET_TEMPLATE } from './prompts';
 
 const KEYS = {
   apiProfiles: 'sully_lite_api_profiles_v1',
   activeApiId: 'sully_lite_active_api_v1',
+  background: 'sully_lite_chat_background_v1',
   cloud: 'sully_lite_cloud_v1',
   deviceId: 'sully_lite_device_id_v1',
   embedding: 'sully_lite_embedding_v1',
   identity: 'sully_lite_identity_v1',
   messages: 'sully_lite_messages_v1',
+  memorySummaryApi: 'sully_lite_memory_summary_api_v1',
   fontSize: 'sully_lite_font_size_v1',
   theme: 'sully_lite_theme_v1',
   stickers: 'sully_lite_stickers_v1',
@@ -27,12 +29,14 @@ const safeGetItem = (key: string): string | null => {
   }
 };
 
-const safeSetItem = (key: string, value: string): void => {
+const safeSetItem = (key: string, value: string): boolean => {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
     // Some Android browsers disable or exhaust localStorage. The page should
     // remain usable for the current session instead of crashing to a white screen.
+    return false;
   }
 };
 
@@ -81,6 +85,23 @@ export function loadApiProfiles(): LiteApiProfile[] {
 export function saveApiProfiles(profiles: LiteApiProfile[], activeId: string): void {
   safeSetItem(KEYS.apiProfiles, JSON.stringify(profiles.map(cleanApi)));
   safeSetItem(KEYS.activeApiId, activeId);
+}
+
+export function loadMemorySummaryApi(): LiteMemorySummaryApi {
+  const saved = readJson<Partial<LiteMemorySummaryApi>>(KEYS.memorySummaryApi);
+  return {
+    baseUrl: String(saved?.baseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(saved?.apiKey || '').trim(),
+    model: String(saved?.model || '').trim(),
+  };
+}
+
+export function saveMemorySummaryApi(config: LiteMemorySummaryApi): void {
+  safeSetItem(KEYS.memorySummaryApi, JSON.stringify({
+    baseUrl: config.baseUrl.trim().replace(/\/+$/, ''),
+    apiKey: config.apiKey.trim(),
+    model: config.model.trim(),
+  }));
 }
 
 export function loadActiveApiId(profiles: LiteApiProfile[]): string {
@@ -173,6 +194,14 @@ export function loadStickerText(): string {
 
 export function saveStickerText(value: string): void {
   safeSetItem(KEYS.stickers, value);
+}
+
+export function loadChatBackground(): string {
+  return safeGetItem(KEYS.background) || '';
+}
+
+export function saveChatBackground(value: string): boolean {
+  return safeSetItem(KEYS.background, value);
 }
 
 export function saveEmbeddingConfig(config: LiteEmbeddingConfig): void {

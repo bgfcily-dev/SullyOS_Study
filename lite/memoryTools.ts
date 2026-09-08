@@ -96,7 +96,7 @@ export async function prepareLiteContextMemories(input: {
   const charId = input.charId.trim();
   if (!charId) throw new Error('尚未获取原版角色 ID，请先在原版同步一次近期上下文');
   if (!api.baseUrl.trim() || !api.apiKey.trim() || !api.model.trim()) {
-    throw new Error('请先完成聊天 API 配置，它负责整理记忆');
+    throw new Error('请先完成用于整理记忆的语言模型 API 配置');
   }
   const messages = input.messages.slice(-50);
   if (messages.length < 2) throw new Error('当前上下文太少，至少需要 2 条消息');
