@@ -1,9 +1,9 @@
 import { getEmbedding, getEmbeddings } from '../utils/memoryPalace/embedding';
-import { getVectorCount, testConnection, upsertVectorBatch } from '../utils/memoryPalace/supabaseVector';
+import { getVectorCount, testConnection, upsertVector, upsertVectorBatch } from '../utils/memoryPalace/supabaseVector';
 import type { MemoryNode, MemoryRoom, RemoteVectorConfig } from '../utils/memoryPalace/types';
 import { extractLiteText, liteChatUrl } from './chatApi';
 import { buildLiteRoleContext, LITE_MEMORY_EXTRACTION_RULES } from './prompts';
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryDraft, LiteMessage, LiteVectorStats, PreparedLiteMemoryBatch } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryDraft, LiteMessage, LiteSyncedMemory, LiteVectorStats, PreparedLiteMemoryBatch } from './types';
 
 const VALID_ROOMS = new Set<MemoryRoom>([
   'living_room', 'bedroom', 'study', 'user_room', 'self_room', 'attic', 'windowsill',
@@ -21,6 +21,174 @@ const ensureCloud = (cloud: LiteCloudConfig): void => {
     throw new Error('请先填写 Supabase URL 和 Publishable / anon key');
   }
 };
+
+const cloudHeaders = (cloud: LiteCloudConfig): Record<string, string> => ({
+  apikey: cloud.supabaseAnonKey.trim(),
+  Authorization: `Bearer ${cloud.supabaseAnonKey.trim()}`,
+  'Content-Type': 'application/json',
+});
+
+const memoryRestUrl = (cloud: LiteCloudConfig, query: URLSearchParams): string =>
+  `${cloud.supabaseUrl.trim().replace(/\/+$/, '')}/rest/v1/memory_vectors?${query.toString()}`;
+
+const finiteNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+export function parseLiteSyncedMemoryRows(value: unknown): LiteSyncedMemory[] {
+  if (!Array.isArray(value)) return [];
+  const memories: LiteSyncedMemory[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const row = raw as Record<string, unknown>;
+    const memoryId = typeof row.memory_id === 'string' ? row.memory_id.trim() : '';
+    const charId = typeof row.char_id === 'string' ? row.char_id.trim() : '';
+    const content = typeof row.content === 'string' ? row.content.trim() : '';
+    if (!memoryId.startsWith('lite_ctx_') || !charId || !content) continue;
+    memories.push({
+      memoryId,
+      charId,
+      content,
+      room: VALID_ROOMS.has(row.room as MemoryRoom) ? row.room as MemoryRoom : 'living_room',
+      importance: Math.max(1, Math.min(10, Math.round(finiteNumber(row.importance, 5)))),
+      mood: typeof row.mood === 'string' ? row.mood : '',
+      tags: Array.isArray(row.tags) ? row.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+      createdAt: finiteNumber(row.created_at),
+      lastAccessedAt: finiteNumber(row.last_accessed_at),
+      accessCount: Math.max(0, Math.round(finiteNumber(row.access_count))),
+      model: typeof row.model === 'string' ? row.model : '',
+      dimensions: Math.max(0, Math.round(finiteNumber(row.dimensions))),
+      archived: row.archived === true,
+    });
+  }
+  return memories;
+}
+
+export async function fetchLiteSyncedMemories(cloud: LiteCloudConfig, charId: string): Promise<LiteSyncedMemory[]> {
+  ensureCloud(cloud);
+  const cleanCharId = charId.trim();
+  if (!cleanCharId) throw new Error('尚未获取原版角色 ID，请先在原版同步一次近期上下文');
+  const pageSize = 500;
+  const memories: LiteSyncedMemory[] = [];
+  for (let offset = 0; offset < 5000; offset += pageSize) {
+    const query = new URLSearchParams({
+      select: 'memory_id,char_id,content,dimensions,model,room,importance,tags,mood,created_at,last_accessed_at,access_count,archived',
+      char_id: `eq.${cleanCharId}`,
+      memory_id: 'like.lite_ctx_*',
+      order: 'created_at.desc',
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    let response: Response;
+    try {
+      response = await fetch(memoryRestUrl(cloud, query), { headers: cloudHeaders(cloud) });
+    } catch {
+      throw new Error('无法连接 Supabase，请检查网络、URL 和浏览器跨域设置');
+    }
+    const raw = await response.text();
+    if (!response.ok) throw new Error(`读取已同步记忆失败（${response.status}）：${raw.slice(0, 180) || '未知错误'}`);
+    let rows: unknown;
+    try { rows = raw ? JSON.parse(raw) : []; } catch { throw new Error('Supabase 返回了无法识别的数据'); }
+    const page = parseLiteSyncedMemoryRows(rows);
+    memories.push(...page);
+    if (!Array.isArray(rows) || rows.length < pageSize) break;
+  }
+  return memories;
+}
+
+export async function updateLiteSyncedMemory(input: {
+  memory: LiteSyncedMemory;
+  draft: Pick<LiteSyncedMemory, 'content' | 'room' | 'importance' | 'mood' | 'tags'>;
+  cloud: LiteCloudConfig;
+  embedding: LiteEmbeddingConfig;
+}): Promise<LiteSyncedMemory> {
+  const { memory, cloud, embedding } = input;
+  ensureCloud(cloud);
+  if (!memory.memoryId.startsWith('lite_ctx_')) throw new Error('只能修改由 Lite 上传的记忆');
+  const content = input.draft.content.trim().slice(0, 4000);
+  if (!content) throw new Error('记忆内容不能为空');
+  const next: LiteSyncedMemory = {
+    ...memory,
+    content,
+    room: VALID_ROOMS.has(input.draft.room as MemoryRoom) ? input.draft.room : 'living_room',
+    importance: Math.max(1, Math.min(10, Math.round(Number(input.draft.importance) || 5))),
+    mood: input.draft.mood.trim().slice(0, 40),
+    tags: input.draft.tags.map((tag) => tag.trim()).filter(Boolean).slice(0, 8),
+  };
+
+  if (next.content !== memory.content) {
+    if (!embedding.baseUrl.trim() || !embedding.apiKey.trim() || !embedding.model.trim()) {
+      throw new Error('修改正文需要先填写完整的 Embedding API，程序要为新正文重新生成向量');
+    }
+    const vector = await getEmbedding(next.content, embedding);
+    if (vector.length !== embedding.dimensions) {
+      throw new Error(`模型返回 ${vector.length} 维，当前设置为 ${embedding.dimensions} 维，未保存修改`);
+    }
+    const node: MemoryNode = {
+      id: next.memoryId,
+      charId: next.charId,
+      content: next.content,
+      room: next.room,
+      tags: next.tags,
+      importance: next.importance,
+      mood: next.mood,
+      embedded: true,
+      createdAt: next.createdAt,
+      lastAccessedAt: next.lastAccessedAt || next.createdAt,
+      accessCount: next.accessCount,
+      pinnedUntil: null,
+      origin: 'extraction',
+      archived: next.archived,
+      isBoxSummary: false,
+      eventBoxId: null,
+    };
+    const saved = await upsertVector(remoteConfig(cloud), next.memoryId, next.charId, vector, node, embedding.dimensions, embedding.model);
+    if (!saved) throw new Error('新向量已生成，但 Supabase 没有保存修改');
+    return { ...next, model: embedding.model, dimensions: embedding.dimensions };
+  }
+
+  const query = new URLSearchParams({ select: 'memory_id', memory_id: `eq.${next.memoryId}`, char_id: `eq.${next.charId}` });
+  let response: Response;
+  try {
+    response = await fetch(memoryRestUrl(cloud, query), {
+      method: 'PATCH',
+      headers: { ...cloudHeaders(cloud), Prefer: 'return=representation' },
+      body: JSON.stringify({ room: next.room, importance: next.importance, mood: next.mood, tags: next.tags }),
+    });
+  } catch {
+    throw new Error('无法连接 Supabase，修改没有保存');
+  }
+  const responseText = await response.text();
+  if (!response.ok) throw new Error(`Supabase 修改失败（${response.status}）：${responseText.slice(0, 160)}`);
+  try {
+    const rows = JSON.parse(responseText);
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error('not-found');
+  } catch {
+    throw new Error('云端没有找到这条记忆，可能已在另一台设备删除，请刷新列表');
+  }
+  return next;
+}
+
+export async function deleteLiteSyncedMemory(cloud: LiteCloudConfig, memory: LiteSyncedMemory): Promise<void> {
+  ensureCloud(cloud);
+  if (!memory.memoryId.startsWith('lite_ctx_')) throw new Error('只能删除由 Lite 上传的记忆');
+  const query = new URLSearchParams({ select: 'memory_id', memory_id: `eq.${memory.memoryId}`, char_id: `eq.${memory.charId}` });
+  let response: Response;
+  try {
+    response = await fetch(memoryRestUrl(cloud, query), { method: 'DELETE', headers: { ...cloudHeaders(cloud), Prefer: 'return=representation' } });
+  } catch {
+    throw new Error('无法连接 Supabase，记忆没有删除');
+  }
+  const responseText = await response.text();
+  if (!response.ok) throw new Error(`Supabase 删除失败（${response.status}）：${responseText.slice(0, 160)}`);
+  try {
+    const rows = JSON.parse(responseText);
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error('not-found');
+  } catch {
+    throw new Error('云端没有找到这条记忆，可能已在另一台设备删除，请刷新列表');
+  }
+}
 
 export function parseLiteMemoryDrafts(raw: string): LiteMemoryDraft[] {
   const clean = raw

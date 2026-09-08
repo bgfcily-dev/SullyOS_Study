@@ -73,3 +73,19 @@ export interface LiteVectorStats {
   charId: string;
   checkedAt: number;
 }
+
+export interface LiteSyncedMemory {
+  memoryId: string;
+  charId: string;
+  content: string;
+  room: LiteMemoryDraft['room'];
+  importance: number;
+  mood: string;
+  tags: string[];
+  createdAt: number;
+  lastAccessedAt: number;
+  accessCount: number;
+  model: string;
+  dimensions: number;
+  archived: boolean;
+}

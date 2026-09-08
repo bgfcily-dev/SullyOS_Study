@@ -11,6 +11,7 @@ import {
   List,
   Palette,
   PaperPlaneRight,
+  PencilSimple,
   Plus,
   Smiley,
   Sparkle,
@@ -49,16 +50,29 @@ import {
   saveTheme,
 } from './storage';
 import { recallLiteMemories } from './memoryRecall';
-import { inspectLiteVectorStore, prepareLiteContextMemories, testLiteEmbeddingConnection, uploadPreparedLiteMemories } from './memoryTools';
+import { deleteLiteSyncedMemory, fetchLiteSyncedMemories, inspectLiteVectorStore, prepareLiteContextMemories, testLiteEmbeddingConnection, updateLiteSyncedMemory, uploadPreparedLiteMemories } from './memoryTools';
 import { fetchLiteModels } from './modelApi';
 import { splitLiteReplyParts } from './replyChunks';
-import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMemorySummaryApi, LiteMessage, LiteSticker, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
+import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMemorySummaryApi, LiteMessage, LiteSticker, LiteSyncedMemory, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
-type SettingsSection = 'api' | 'role' | 'memory' | 'appearance';
+type SettingsSection = 'api' | 'role' | 'memory' | 'synced' | 'appearance';
 type SettingsScope = 'quick' | 'main';
 type ModelTarget = 'chat' | 'memory';
 type StickerEditor = { mode: 'add' } | { mode: 'edit'; sticker: LiteSticker };
+
+const MEMORY_ROOM_OPTIONS: Array<{ value: LiteSyncedMemory['room']; label: string }> = [
+  { value: 'living_room', label: '客厅 · 日常' },
+  { value: 'bedroom', label: '卧室 · 亲密关系' },
+  { value: 'study', label: '书房 · 工作学习' },
+  { value: 'user_room', label: '用户房间 · 用户资料' },
+  { value: 'self_room', label: '角色房间 · 角色自我' },
+  { value: 'attic', label: '阁楼 · 未解决的事' },
+  { value: 'windowsill', label: '窗边 · 期盼与目标' },
+];
+
+const memoryRoomLabel = (room: LiteSyncedMemory['room']): string =>
+  MEMORY_ROOM_OPTIONS.find((option) => option.value === room)?.label || room;
 
 const formatTimestamp = (timestamp: number, withDate = false): string => {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
@@ -153,6 +167,9 @@ export function LiteApp() {
   const [stickerEditor, setStickerEditor] = useState<StickerEditor | null>(null);
   const [messageEditor, setMessageEditor] = useState<LiteMessage | null>(null);
   const [memoryPreview, setMemoryPreview] = useState<PreparedLiteMemoryBatch | null>(null);
+  const [syncedMemories, setSyncedMemories] = useState<LiteSyncedMemory[]>([]);
+  const [syncedMemoriesBusy, setSyncedMemoriesBusy] = useState(false);
+  const [syncedMemoryEditor, setSyncedMemoryEditor] = useState<LiteSyncedMemory | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
   const messageStageRef = useRef<HTMLElement>(null);
@@ -163,6 +180,11 @@ export function LiteApp() {
   const messageLongPressTimerRef = useRef<number | null>(null);
   const messagePointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const messageContentRef = useRef<HTMLTextAreaElement>(null);
+  const syncedMemoryContentRef = useRef<HTMLTextAreaElement>(null);
+  const syncedMemoryRoomRef = useRef<HTMLSelectElement>(null);
+  const syncedMemoryImportanceRef = useRef<HTMLInputElement>(null);
+  const syncedMemoryMoodRef = useRef<HTMLInputElement>(null);
+  const syncedMemoryTagsRef = useRef<HTMLInputElement>(null);
   const suppressStickerClickRef = useRef(false);
   const activeApi = apiProfiles.find((profile) => profile.id === activeApiId) || apiProfiles[0];
   const deletedMessageIdSet = useMemo(() => new Set(deletedMessageIds), [deletedMessageIds]);
@@ -183,6 +205,15 @@ export function LiteApp() {
   const memorySummaryApiReady = Boolean(memorySummaryApi.baseUrl && memorySummaryApi.apiKey && memorySummaryApi.model);
   const memoryApiProfile: LiteApiProfile = { id: 'memory-summary', name: '记忆总结 API', ...memorySummaryApi };
   const selectedModel = modelTarget === 'memory' ? memorySummaryApi.model : activeApi?.model || '';
+  const syncedMemorySummary = useMemo(() => {
+    const rooms = new Map<LiteSyncedMemory['room'], number>();
+    const vectorProfiles = new Set<string>();
+    for (const memory of syncedMemories) {
+      rooms.set(memory.room, (rooms.get(memory.room) || 0) + 1);
+      vectorProfiles.add(`${memory.model || '未记录模型'} · ${memory.dimensions || '?'} 维`);
+    }
+    return { rooms: Array.from(rooms.entries()), vectorProfiles: Array.from(vectorProfiles) };
+  }, [syncedMemories]);
 
   useEffect(() => saveApiProfiles(apiProfiles, activeApiId), [apiProfiles, activeApiId]);
   useEffect(() => saveMemorySummaryApi(memorySummaryApi), [memorySummaryApi]);
@@ -681,6 +712,70 @@ export function LiteApp() {
     }
   };
 
+  const refreshSyncedMemories = async () => {
+    setSyncedMemoriesBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在读取 Lite 已上传的云端记忆…' });
+    try {
+      let currentContext = cloudContext;
+      if (!currentContext?.charId && cloudReady) {
+        currentContext = await fetchSharedContext(cloudConfig);
+        setCloudContext(currentContext);
+      }
+      const memories = await fetchLiteSyncedMemories(cloudConfig, currentContext?.charId || '');
+      setSyncedMemories(memories);
+      setSettingsNotice({ kind: 'success', text: `读取成功：Lite 为当前角色上传过 ${memories.length} 条记忆` });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '已同步记忆读取失败' });
+    } finally {
+      setSyncedMemoriesBusy(false);
+    }
+  };
+
+  const saveSyncedMemory = async () => {
+    if (!syncedMemoryEditor) return;
+    const room = syncedMemoryRoomRef.current?.value as LiteSyncedMemory['room'] || syncedMemoryEditor.room;
+    const tags = (syncedMemoryTagsRef.current?.value || '').split(/[,，、]/).map((tag) => tag.trim()).filter(Boolean);
+    setSyncedMemoriesBusy(true);
+    setSettingsNotice({ kind: 'info', text: syncedMemoryContentRef.current?.value.trim() !== syncedMemoryEditor.content ? '正在重新生成向量并保存…' : '正在保存云端修改…' });
+    try {
+      const updated = await updateLiteSyncedMemory({
+        memory: syncedMemoryEditor,
+        draft: {
+          content: syncedMemoryContentRef.current?.value || '',
+          room,
+          importance: Number(syncedMemoryImportanceRef.current?.value) || 5,
+          mood: syncedMemoryMoodRef.current?.value || '',
+          tags,
+        },
+        cloud: cloudConfig,
+        embedding: embeddingConfig,
+      });
+      setSyncedMemories((current) => current.map((memory) => memory.memoryId === updated.memoryId ? updated : memory));
+      setSyncedMemoryEditor(null);
+      setSettingsNotice({ kind: 'success', text: '修改成功，云端记忆和向量已保持一致' });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '云端记忆修改失败' });
+    } finally {
+      setSyncedMemoriesBusy(false);
+    }
+  };
+
+  const removeSyncedMemory = async (memory: LiteSyncedMemory) => {
+    if (!window.confirm('确定删除这条记忆吗？它会从 Supabase 云端删除，且无法恢复。')) return;
+    setSyncedMemoriesBusy(true);
+    setSettingsNotice({ kind: 'info', text: '正在从云端删除记忆…' });
+    try {
+      await deleteLiteSyncedMemory(cloudConfig, memory);
+      setSyncedMemories((current) => current.filter((item) => item.memoryId !== memory.memoryId));
+      if (syncedMemoryEditor?.memoryId === memory.memoryId) setSyncedMemoryEditor(null);
+      setSettingsNotice({ kind: 'success', text: '删除成功，Supabase 云端已同步删除' });
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '云端记忆删除失败' });
+    } finally {
+      setSyncedMemoriesBusy(false);
+    }
+  };
+
   const sendSticker = (name: string) => {
     setLocalMessages((current) => [...current, newLiteMessage('user', `[表情包：${name}]`)]);
     setStickerPickerOpen(false);
@@ -853,13 +948,16 @@ export function LiteApp() {
             <div className="sheet-title-row">
               <div>
                 <span className="eyebrow">LIGHT CLIENT</span>
-                <h2 id="lite-settings-title">{settingsScope === 'main' ? '角色与记忆' : settingsSection === 'api' ? 'API 配置' : '外观'}</h2>
+                <h2 id="lite-settings-title">{settingsScope === 'main' ? settingsSection === 'synced' ? '已同步的记忆' : '角色与记忆' : settingsSection === 'api' ? 'API 配置' : '外观'}</h2>
               </div>
               <button type="button" className="text-button" onClick={() => setSettingsOpen(false)}>完成</button>
             </div>
             {settingsScope === 'main' && <nav className="settings-tabs" aria-label="设置分区">
-              {([['role', '角色设置'], ['memory', '向量记忆']] as const).map(([section, label]) => (
-                <button key={section} type="button" className={settingsSection === section ? 'active' : ''} onClick={() => setSettingsSection(section)}>{label}</button>
+              {([['role', '角色设置'], ['memory', '向量记忆'], ['synced', '已同步的记忆']] as const).map(([section, label]) => (
+                <button key={section} type="button" className={settingsSection === section ? 'active' : ''} onClick={() => {
+                  setSettingsSection(section);
+                  if (section === 'synced') void refreshSyncedMemories();
+                }}>{label}</button>
               ))}
             </nav>}
 
@@ -979,6 +1077,52 @@ export function LiteApp() {
             </div>
             </>}
 
+            {settingsSection === 'synced' && <>
+              <div className="setting-card synced-memory-overview">
+                <div className="setting-card-title">
+                  <div><strong>Lite 上传记录汇总</strong><p>这里直接读取 Supabase，只显示由 Lite 整理并上传、且属于当前 charId 的记忆。</p></div>
+                  <button type="button" className="round-action" aria-label="刷新已同步的记忆" onClick={() => void refreshSyncedMemories()} disabled={syncedMemoriesBusy}>{syncedMemoriesBusy ? <ArrowClockwise size={17} className="spin" /> : <ArrowClockwise size={17} />}</button>
+                </div>
+                <div className="synced-memory-totals">
+                  <div><span>Lite 已上传</span><strong>{syncedMemories.length} 条</strong></div>
+                  <div><span>当前角色 ID</span><strong>{cloudContext?.charId ? `${cloudContext.charId.slice(0, 8)}…` : '未获取'}</strong></div>
+                </div>
+                {cloudContext?.charId && <p className="field-hint synced-memory-char-id">完整 charId：<code>{cloudContext.charId}</code></p>}
+                {syncedMemorySummary.rooms.length > 0 && <div className="synced-memory-room-summary">
+                  {syncedMemorySummary.rooms.map(([room, count]) => <span key={room}>{memoryRoomLabel(room)} {count}</span>)}
+                </div>}
+                {syncedMemorySummary.vectorProfiles.length > 0 && <p className="field-hint">云端记录的向量配置：{syncedMemorySummary.vectorProfiles.join('；')}</p>}
+                <p className="field-hint">Lite 当前 Embedding：{embeddingConfig.model || '未填写模型'} · {embeddingConfig.dimensions || '?'} 维</p>
+                <div className="compatibility-note">
+                  <strong>原版读不到时检查</strong>
+                  <ol>
+                    <li>两版填写的是同一个 Supabase 项目的 URL 和 key；</li>
+                    <li>原版“远程向量存储”已启用并显示初始化完成；</li>
+                    <li>原版当前角色的记忆宫殿开关已开启，charId 与上方一致；</li>
+                    <li>两版 Embedding 模型和维度完全相同，再用和记忆内容相关的话题触发检索。</li>
+                  </ol>
+                </div>
+              </div>
+
+              <div className="synced-memory-list" aria-live="polite">
+                {syncedMemoriesBusy && syncedMemories.length === 0 ? <div className="synced-memory-empty"><ArrowClockwise size={20} className="spin" />正在读取云端记忆…</div>
+                  : syncedMemories.length === 0 ? <div className="synced-memory-empty"><Cloud size={21} />还没有读取到当前角色由 Lite 上传的记忆</div>
+                    : syncedMemories.map((memory) => <article className="synced-memory-card" key={memory.memoryId}>
+                      <div className="synced-memory-card-head">
+                        <div><span>{memoryRoomLabel(memory.room)}</span><b>重要性 {memory.importance}</b>{memory.archived && <i>已归档</i>}</div>
+                        <div className="small-actions">
+                          <button type="button" className="round-action" aria-label="编辑这条记忆" onClick={() => setSyncedMemoryEditor(memory)} disabled={syncedMemoriesBusy}><PencilSimple size={16} /></button>
+                          <button type="button" className="round-action danger" aria-label="删除这条记忆" onClick={() => void removeSyncedMemory(memory)} disabled={syncedMemoriesBusy}><Trash size={16} /></button>
+                        </div>
+                      </div>
+                      <p>{memory.content}</p>
+                      {memory.tags.length > 0 && <div className="synced-memory-tags">{memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}
+                      <small>{formatTimestamp(memory.createdAt, true)} · {memory.model || '未记录模型'} · {memory.dimensions || '?'} 维</small>
+                    </article>)}
+              </div>
+              <p className="synced-memory-footnote">修改正文时会调用当前 Lite 的 Embedding API 重做向量；只改房间、重要性、情绪或标签时不会重复生成向量。删除会直接删除云端记录。</p>
+            </>}
+
             {settingsSection === 'appearance' && <>
             <div className="setting-card appearance-card">
               <div className="setting-card-title"><strong>外观</strong></div>
@@ -1065,6 +1209,26 @@ export function LiteApp() {
             <div className="sticker-editor-footer">
               <button type="button" className="danger-link" onClick={deleteMessage}>删除这条消息</button>
               <button type="button" className="primary-button" onClick={saveEditedMessage}>保存修改</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {syncedMemoryEditor && (
+        <div className="model-picker-backdrop" role="presentation" onMouseDown={() => { if (!syncedMemoriesBusy) setSyncedMemoryEditor(null); }}>
+          <section key={syncedMemoryEditor.memoryId} className="sticker-editor-dialog synced-memory-editor" role="dialog" aria-modal="true" aria-labelledby="lite-synced-memory-editor-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="model-picker-header"><div><span>保存后立即同步到 Supabase</span><h2 id="lite-synced-memory-editor-title">编辑已同步的记忆</h2></div><button type="button" className="round-action" aria-label="关闭" disabled={syncedMemoriesBusy} onClick={() => setSyncedMemoryEditor(null)}><X size={18} /></button></div>
+            <label>记忆内容<textarea ref={syncedMemoryContentRef} rows={7} defaultValue={syncedMemoryEditor.content} autoFocus /></label>
+            <p className="field-hint">如果修改正文，保存时会重新调用 Embedding API 生成向量。</p>
+            <div className="two-fields synced-memory-edit-fields">
+              <label>房间<select ref={syncedMemoryRoomRef} defaultValue={syncedMemoryEditor.room}>{MEMORY_ROOM_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
+              <label>重要性（1–10）<input ref={syncedMemoryImportanceRef} type="number" min="1" max="10" defaultValue={syncedMemoryEditor.importance} /></label>
+            </div>
+            <label>情绪<input ref={syncedMemoryMoodRef} defaultValue={syncedMemoryEditor.mood} placeholder="例如：neutral、tender" /></label>
+            <label>标签<input ref={syncedMemoryTagsRef} defaultValue={syncedMemoryEditor.tags.join('，')} placeholder="用逗号分隔" /></label>
+            <div className="sticker-editor-footer">
+              <button type="button" className="danger-link" disabled={syncedMemoriesBusy} onClick={() => void removeSyncedMemory(syncedMemoryEditor)}>删除这条记忆</button>
+              <button type="button" className="primary-button" disabled={syncedMemoriesBusy} onClick={() => void saveSyncedMemory()}>{syncedMemoriesBusy ? <ArrowClockwise size={17} className="spin" /> : <CloudArrowUp size={17} />}{syncedMemoriesBusy ? '正在保存' : '保存到云端'}</button>
             </div>
           </section>
         </div>
