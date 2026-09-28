@@ -125,7 +125,10 @@ async function ensureSchema(db: D1Database): Promise<void> {
       updated_at INTEGER NOT NULL
     )`,
   ];
-  for (const statement of statements) await db.exec(`${statement};`);
+  // D1's exec() treats newlines as query separators, so a multiline CREATE
+  // TABLE statement is split after its first line. Prepared statements keep
+  // each schema operation intact, and batch applies the whole schema together.
+  await db.batch(statements.map((statement) => db.prepare(statement)));
   schemaReady = true;
 }
 

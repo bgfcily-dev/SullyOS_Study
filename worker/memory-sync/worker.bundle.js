@@ -56,7 +56,7 @@ async function ensureSchema(db) {
       updated_at INTEGER NOT NULL
     )`
   ];
-  for (const statement of statements) await db.exec(`${statement};`);
+  await db.batch(statements.map((statement) => db.prepare(statement)));
   schemaReady = true;
 }
 function authorized(request, env) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import worker, { parseVectorInput, type Env } from './index';
 
 const unusedEnv = (token?: string): Env => ({
@@ -30,5 +30,33 @@ describe('memory-sync access control', () => {
     const request = new Request('https://sync.example/health', { headers: { Authorization: 'Bearer wrong' } });
     expect((await worker.fetch(request, unusedEnv())).status).toBe(503);
     expect((await worker.fetch(request, unusedEnv('right'))).status).toBe(401);
+  });
+
+  it('initializes multiline schema statements through a prepared batch', async () => {
+    const queries: string[] = [];
+    const batch = vi.fn(async () => []);
+    const env: Env = {
+      SYNC_TOKEN: 'right',
+      DB: {
+        prepare(query: string) {
+          queries.push(query);
+          return {} as ReturnType<Env['DB']['prepare']>;
+        },
+        batch,
+        exec: vi.fn(async () => ({})),
+      },
+      VECTORS: {} as Env['VECTORS'],
+    };
+
+    const response = await worker.fetch(
+      new Request('https://sync.example/health', { headers: { Authorization: 'Bearer right' } }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(batch).toHaveBeenCalledOnce();
+    expect(queries).toHaveLength(6);
+    expect(queries[0]).toContain('\n');
+    expect(env.DB.exec).not.toHaveBeenCalled();
   });
 });
