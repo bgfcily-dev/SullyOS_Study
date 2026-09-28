@@ -52,6 +52,7 @@ import {
 import { recallLiteMemories } from './memoryRecall';
 import { deleteLiteSyncedMemory, fetchLiteSyncedMemories, inspectLiteVectorStore, prepareLiteContextMemories, testLiteEmbeddingConnection, updateLiteSyncedMemory, uploadPreparedLiteMemories } from './memoryTools';
 import { fetchLiteModels } from './modelApi';
+import { getCurrentTurnReplyIds, getLiteReplyDelay } from './replyDelivery';
 import { splitLiteReplyParts } from './replyChunks';
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMemorySummaryApi, LiteMessage, LiteSticker, LiteSyncedMemory, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
 
@@ -194,6 +195,7 @@ export function LiteApp() {
     () => mergeMessageHistory(visibleCloudMessages, visibleLocalMessages, 100),
     [visibleCloudMessages, visibleLocalMessages],
   );
+  const currentTurnReplyIds = useMemo(() => getCurrentTurnReplyIds(shownMessages), [shownMessages]);
   const filteredModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
     return query ? modelOptions.filter((model) => model.toLowerCase().includes(query)) : modelOptions;
@@ -237,7 +239,7 @@ export function LiteApp() {
   useEffect(() => {
     saveTheme(theme);
     document.documentElement.dataset.liteTheme = theme;
-    const color = theme === 'dark' ? '#202020' : '#f5f2ed';
+    const color = theme === 'dark' ? '#202020' : '#ffffff';
     document.documentElement.style.backgroundColor = color;
     document.body.style.backgroundColor = color;
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
@@ -386,9 +388,13 @@ export function LiteApp() {
     setNotice(null);
   };
 
-  const generateReply = async () => {
+  const generateReply = async (replaceReplyIds: string[] = []) => {
     if (sending) return;
-    const latestMessage = shownMessages[shownMessages.length - 1];
+    const replacing = new Set(replaceReplyIds);
+    const localMessagesForRequest = visibleLocalMessages.filter((message) => !replacing.has(message.id));
+    const cloudMessagesForRequest = visibleCloudMessages.filter((message) => !replacing.has(message.id));
+    const messagesForRequest = mergeMessageHistory(cloudMessagesForRequest, localMessagesForRequest, 100);
+    const latestMessage = messagesForRequest[messagesForRequest.length - 1];
     if (!latestMessage || latestMessage.role !== 'user') {
       setNotice({ kind: 'info', text: '请先发送一条消息，再点击“生成”。' });
       return;
@@ -406,14 +412,14 @@ export function LiteApp() {
       const activeCloud = latestCloud || cloudContext;
       const visibleActiveCloud = activeCloud ? {
         ...activeCloud,
-        messages: activeCloud.messages.filter((message) => !deletedMessageIdSet.has(message.id)),
+        messages: activeCloud.messages.filter((message) => !deletedMessageIdSet.has(message.id) && !replacing.has(message.id)),
       } : null;
       let memories: LiteMemoryRecall[] = [];
       if (visibleActiveCloud?.charId && cloudReady && embeddingConfig.enabled) {
         try {
           memories = await recallLiteMemories({
             charId: visibleActiveCloud.charId,
-            messages: mergeMessageHistory(visibleActiveCloud.messages, visibleLocalMessages, 50),
+            messages: mergeMessageHistory(visibleActiveCloud.messages, localMessagesForRequest, 50),
             cloud: cloudConfig,
             embedding: embeddingConfig,
           });
@@ -425,19 +431,44 @@ export function LiteApp() {
       } else {
         setLastRecallCount(0);
       }
-      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: visibleLocalMessages, memories, stickers });
+      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: localMessagesForRequest, memories, stickers });
       const replyParts = splitLiteReplyParts(reply, stickers.map((sticker) => sticker.name));
       const baseTime = Date.now();
       const replyMessages = replyParts.map((part, index) => ({
         ...newLiteMessage('assistant', part.kind === 'sticker' ? `[表情包：${part.name}]` : part.content),
         createdAt: baseTime + index,
       }));
-      setLocalMessages((current) => [...current, ...replyMessages]);
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+      for (let index = 0; index < replyMessages.length; index += 1) {
+        const replyMessage = replyMessages[index];
+        setLocalMessages((current) => {
+          const retained = index === 0 && replacing.size > 0
+            ? current.filter((message) => !replacing.has(message.id))
+            : current;
+          return [...retained, replyMessage];
+        });
+        if (index === 0 && replacing.size > 0) {
+          setDeletedMessageIds((current) => Array.from(new Set([...current, ...replaceReplyIds])).slice(-200));
+        }
+        if (index < replyMessages.length - 1) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, getLiteReplyDelay(replyParts[index], reducedMotion)));
+        }
+      }
     } catch (error: any) {
       setNotice({ kind: 'error', text: error?.message || '生成回复失败' });
     } finally {
       setSending(false);
     }
+  };
+
+  const regenerateCurrentTurn = () => {
+    if (sending) return;
+    if (currentTurnReplyIds.length === 0) {
+      setNotice({ kind: 'info', text: '当前回合还没有可重新生成的回复。' });
+      return;
+    }
+    setComposerMenuOpen(false);
+    void generateReply(currentTurnReplyIds);
   };
 
   const selectAvatar = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -893,6 +924,7 @@ export function LiteApp() {
       </div>}
 
       {composerMenuOpen && <section className="composer-tray function-tray" aria-label="快捷功能">
+        <button type="button" aria-label="重新回复本回合" title="重新回复本回合" disabled={sending || currentTurnReplyIds.length === 0} onClick={regenerateCurrentTurn}><ArrowClockwise size={21} /></button>
         <button type="button" aria-label="打开 API 设置" title="API 设置" onClick={() => openSettings('api', 'quick')}><GearSix size={21} /></button>
         <button type="button" aria-label="打开外观设置" title="外观设置" onClick={() => openSettings('appearance', 'quick')}><Palette size={21} /></button>
       </section>}
