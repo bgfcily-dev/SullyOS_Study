@@ -1,0 +1,21 @@
+name = "sullyos-memory-sync"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sullyos-memory-sync"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[[vectorize]]
+binding = "VECTORS"
+index_name = "sullyos-memory-vectors"
+
+[vars]
+VECTOR_DIMENSIONS = "1024"

@@ -201,6 +201,7 @@ export function LiteApp() {
   const stickers = useMemo(() => parseLiteStickerText(stickerText), [stickerText]);
   const stickerMap = useMemo(() => new Map(stickers.map((sticker) => [sticker.name, sticker.url])), [stickers]);
   const cloudReady = Boolean(cloudConfig.supabaseUrl && cloudConfig.supabaseAnonKey);
+  const isSupabaseCloud = /\.supabase\.co(?=\/|$)/i.test(cloudConfig.supabaseUrl);
   const memorySummaryApiStarted = Boolean(memorySummaryApi.baseUrl || memorySummaryApi.apiKey || memorySummaryApi.model);
   const memorySummaryApiReady = Boolean(memorySummaryApi.baseUrl && memorySummaryApi.apiKey && memorySummaryApi.model);
   const memoryApiProfile: LiteApiProfile = { id: 'memory-summary', name: '记忆总结 API', ...memorySummaryApi };
@@ -622,7 +623,7 @@ export function LiteApp() {
 
   const testCloud = async () => {
     setCloudBusy(true);
-    setSettingsNotice({ kind: 'info', text: '正在测试 Supabase 连接…' });
+    setSettingsNotice({ kind: 'info', text: '正在测试云端同步连接…' });
     try {
       const text = await testSharedContextConnection(cloudConfig);
       setSettingsNotice({ kind: 'success', text });
@@ -648,7 +649,7 @@ export function LiteApp() {
 
   const inspectVectors = async () => {
     setVectorInspectBusy(true);
-    setSettingsNotice({ kind: 'info', text: '正在读取 Supabase 中的实际向量数量…' });
+    setSettingsNotice({ kind: 'info', text: '正在读取云端的实际向量数量…' });
     try {
       const stats = await inspectLiteVectorStore(cloudConfig, cloudContext?.charId || '');
       setVectorStats(stats);
@@ -696,7 +697,7 @@ export function LiteApp() {
     if (!memoryPreview) return;
     setArchiveBusy(true);
     setMemoryPreviewNotice({ kind: 'info', text: '正在生成向量并上传…' });
-    setSettingsNotice({ kind: 'info', text: '正在生成向量并上传到 Supabase…' });
+    setSettingsNotice({ kind: 'info', text: '正在生成向量并上传到云端…' });
     try {
       const result = await uploadPreparedLiteMemories({ batch: memoryPreview, cloud: cloudConfig, embedding: embeddingConfig });
       setMemoryPreview(null);
@@ -761,14 +762,14 @@ export function LiteApp() {
   };
 
   const removeSyncedMemory = async (memory: LiteSyncedMemory) => {
-    if (!window.confirm('确定删除这条记忆吗？它会从 Supabase 云端删除，且无法恢复。')) return;
+    if (!window.confirm('确定删除这条记忆吗？它会从云端删除，且无法恢复。')) return;
     setSyncedMemoriesBusy(true);
     setSettingsNotice({ kind: 'info', text: '正在从云端删除记忆…' });
     try {
       await deleteLiteSyncedMemory(cloudConfig, memory);
       setSyncedMemories((current) => current.filter((item) => item.memoryId !== memory.memoryId));
       if (syncedMemoryEditor?.memoryId === memory.memoryId) setSyncedMemoryEditor(null);
-      setSettingsNotice({ kind: 'success', text: '删除成功，Supabase 云端已同步删除' });
+      setSettingsNotice({ kind: 'success', text: '删除成功，云端记录已同步删除' });
     } catch (error: any) {
       setSettingsNotice({ kind: 'error', text: error?.message || '云端记忆删除失败' });
     } finally {
@@ -1029,9 +1030,9 @@ export function LiteApp() {
 
             {settingsSection === 'memory' && <>
             <div className="setting-card">
-              <div className="setting-card-title"><div><strong>Supabase：接力与向量库</strong><p>这两个字段请复制原版“记忆宫殿 → 远程向量存储”的地址和 Publishable / anon key。</p></div></div>
-              <label>Supabase URL<input value={cloudConfig.supabaseUrl} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseUrl: event.target.value })} placeholder="https://xxxx.supabase.co" autoCapitalize="none" /></label>
-              <label>Supabase Publishable / anon key<input type="password" value={cloudConfig.supabaseAnonKey} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseAnonKey: event.target.value })} placeholder="sb_publishable_... 或 eyJ..." autoCapitalize="none" /></label>
+              <div className="setting-card-title"><div><strong>云端：接力与向量库</strong><p>复制原版“记忆宫殿 → 云端记忆同步”的同一地址和密钥；支持 Cloudflare Worker 或 Supabase。</p></div></div>
+              <label>同步服务 URL<input value={cloudConfig.supabaseUrl} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseUrl: event.target.value })} placeholder="https://xxxx.workers.dev 或 https://xxxx.supabase.co" autoCapitalize="none" /></label>
+              <label>访问密钥<input type="password" value={cloudConfig.supabaseAnonKey} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseAnonKey: event.target.value })} placeholder="Cloudflare SYNC_TOKEN 或 Supabase anon key" autoCapitalize="none" /></label>
               <p className={`credential-state ${cloudConfig.supabaseAnonKey ? 'ready' : ''}`}>{keyStatus(cloudConfig.supabaseAnonKey)}</p>
               <label>这台设备的名称<input value={cloudConfig.deviceName} onChange={(event) => setCloudConfig({ ...cloudConfig, deviceName: event.target.value })} placeholder="例如：我的手机" /></label>
               <p className="field-hint">设备 ID 自动生成：{cloudConfig.deviceId.slice(0, 8)}…</p>
@@ -1040,11 +1041,13 @@ export function LiteApp() {
                 <button type="button" className="secondary-button" onClick={() => void testCloud()} disabled={cloudBusy}><ArrowClockwise size={17} />测试并读取</button>
                 <button type="button" className="primary-button" onClick={() => void syncToCloud()} disabled={cloudBusy}><CloudArrowUp size={17} />同步近期上下文</button>
               </div>
-              <button type="button" className="sql-toggle" onClick={() => setShowSql((value) => !value)}>{showSql ? '收起初始化 SQL' : '第一次使用：显示初始化 SQL'}</button>
-              {showSql && <div className="sql-box">
-                <div><span>复制后在 Supabase 的 SQL Editor 运行一次</span><button type="button" onClick={() => void copyHandoffSql()}><Copy size={15} />复制</button></div>
-                <pre>{SHARED_CONTEXT_SQL}</pre>
-              </div>}
+              {isSupabaseCloud && <>
+                <button type="button" className="sql-toggle" onClick={() => setShowSql((value) => !value)}>{showSql ? '收起初始化 SQL' : 'Supabase 第一次使用：显示初始化 SQL'}</button>
+                {showSql && <div className="sql-box">
+                  <div><span>复制后在 Supabase 的 SQL Editor 运行一次</span><button type="button" onClick={() => void copyHandoffSql()}><Copy size={15} />复制</button></div>
+                  <pre>{SHARED_CONTEXT_SQL}</pre>
+                </div>}
+              </>}
               <button type="button" className="danger-link" onClick={() => void clearCloud()} disabled={!cloudReady || cloudBusy}>清除云端共享上下文</button>
             </div>
 
@@ -1072,7 +1075,7 @@ export function LiteApp() {
               </button>
               <label>记忆整理补充要求（可选）<textarea value={embeddingConfig.extractionPrompt} onChange={(event) => setEmbeddingConfig({ ...embeddingConfig, extractionPrompt: event.target.value })} rows={4} placeholder="例如：更重视用户的长期计划；不要记录工作细节" /></label>
               <details className="prompt-preview"><summary>查看内置记忆整理规则</summary><div>从最近 50 条对话中筛选真正值得长期保留的内容，通常提取 1–5 条、最多 8 条；使用角色第一人称，并为每条记忆分配房间、重要性、情绪和标签。固定 JSON 格式由程序维护，补充要求不会覆盖这些结构规则。</div></details>
-              <p className="field-hint">先由独立记忆总结 API（未配置时为当前聊天 API）整理草稿；确认后才调用 Embedding API 并写入 Supabase 的 <code>memory_vectors</code>。重复处理同一批内容会覆盖同一批记忆。</p>
+              <p className="field-hint">先由独立记忆总结 API（未配置时为当前聊天 API）整理草稿；确认后才调用 Embedding API 并写入云端 <code>memory_vectors</code>。重复处理同一批内容会覆盖同一批记忆。</p>
               <p className="field-hint">必须与原版创建这些记忆时使用的模型和维度一致。没有填写完整时会跳过记忆检索，但普通聊天仍可继续。</p>
             </div>
             </>}
@@ -1080,7 +1083,7 @@ export function LiteApp() {
             {settingsSection === 'synced' && <>
               <div className="setting-card synced-memory-overview">
                 <div className="setting-card-title">
-                  <div><strong>Lite 上传记录汇总</strong><p>这里直接读取 Supabase，只显示由 Lite 整理并上传、且属于当前 charId 的记忆。</p></div>
+                  <div><strong>Lite 上传记录汇总</strong><p>这里直接读取云端，只显示由 Lite 整理并上传、且属于当前 charId 的记忆。</p></div>
                   <button type="button" className="round-action" aria-label="刷新已同步的记忆" onClick={() => void refreshSyncedMemories()} disabled={syncedMemoriesBusy}>{syncedMemoriesBusy ? <ArrowClockwise size={17} className="spin" /> : <ArrowClockwise size={17} />}</button>
                 </div>
                 <div className="synced-memory-totals">
@@ -1096,7 +1099,7 @@ export function LiteApp() {
                 <div className="compatibility-note">
                   <strong>原版读不到时检查</strong>
                   <ol>
-                    <li>两版填写的是同一个 Supabase 项目的 URL 和 key；</li>
+                    <li>两版填写的是同一个云端同步服务 URL 和访问密钥；</li>
                     <li>原版“远程向量存储”已启用并显示初始化完成；</li>
                     <li>原版当前角色的记忆宫殿开关已开启，charId 与上方一致；</li>
                     <li>两版 Embedding 模型和维度完全相同，再用和记忆内容相关的话题触发检索。</li>
@@ -1217,7 +1220,7 @@ export function LiteApp() {
       {syncedMemoryEditor && (
         <div className="model-picker-backdrop" role="presentation" onMouseDown={() => { if (!syncedMemoriesBusy) setSyncedMemoryEditor(null); }}>
           <section key={syncedMemoryEditor.memoryId} className="sticker-editor-dialog synced-memory-editor" role="dialog" aria-modal="true" aria-labelledby="lite-synced-memory-editor-title" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="model-picker-header"><div><span>保存后立即同步到 Supabase</span><h2 id="lite-synced-memory-editor-title">编辑已同步的记忆</h2></div><button type="button" className="round-action" aria-label="关闭" disabled={syncedMemoriesBusy} onClick={() => setSyncedMemoryEditor(null)}><X size={18} /></button></div>
+            <div className="model-picker-header"><div><span>保存后立即同步到云端</span><h2 id="lite-synced-memory-editor-title">编辑已同步的记忆</h2></div><button type="button" className="round-action" aria-label="关闭" disabled={syncedMemoriesBusy} onClick={() => setSyncedMemoryEditor(null)}><X size={18} /></button></div>
             <label>记忆内容<textarea ref={syncedMemoryContentRef} rows={7} defaultValue={syncedMemoryEditor.content} autoFocus /></label>
             <p className="field-hint">如果修改正文，保存时会重新调用 Embedding API 生成向量。</p>
             <div className="two-fields synced-memory-edit-fields">

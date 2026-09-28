@@ -1,10 +1,10 @@
 /**
- * Memory Palace — Supabase pgvector 远程向量存储
+ * Memory Palace — PostgREST-compatible remote vector storage
  *
- * 用户在自己的 Supabase 项目里存储向量，本地只做缓存。
- * 使用原生 fetch 调用 PostgREST API，无需额外依赖。
+ * 支持 Supabase pgvector，以及仓库内的 Cloudflare D1 + Vectorize
+ * 兼容 Worker。使用原生 fetch 调用兼容接口，无需额外依赖。
  *
- * 数据归属：100% 在用户自己的 Supabase 项目，我们不碰不存。
+ * 数据归属：100% 在用户自己的云服务，本项目不代管。
  */
 
 import type { RemoteVectorConfig, MemoryNode } from './types';
@@ -130,7 +130,7 @@ create policy "Allow all access" on memory_vectors
   for all using (true) with check (true);
 `.trim();
 
-// ─── Supabase REST helpers ───────────────────────────
+// ─── PostgREST-compatible helpers ───────────────────
 
 function headers(config: RemoteVectorConfig): Record<string, string> {
     return {
@@ -169,15 +169,15 @@ export async function testConnection(config: RemoteVectorConfig): Promise<{
         }
         if (res.status === 404 || res.status === 406) {
             // Table doesn't exist — PostgREST returns 404 or specific error
-            return { ok: true, tableExists: false, message: '连接成功，但表尚未创建（请运行初始化 SQL）' };
+            return { ok: true, tableExists: false, message: '连接成功，但存储尚未初始化' };
         }
         if (res.status === 401) {
-            return { ok: false, tableExists: false, message: '认证失败：请检查 anon key' };
+            return { ok: false, tableExists: false, message: '认证失败：请检查访问密钥' };
         }
         const body = await res.text().catch(() => '');
         // Check for "relation does not exist" error
         if (body.includes('does not exist') || body.includes('relation')) {
-            return { ok: true, tableExists: false, message: '连接成功，但表尚未创建（请运行初始化 SQL）' };
+            return { ok: true, tableExists: false, message: '连接成功，但存储尚未初始化' };
         }
         return { ok: false, tableExists: false, message: `服务器返回 ${res.status}: ${body.slice(0, 100)}` };
     } catch (e: any) {

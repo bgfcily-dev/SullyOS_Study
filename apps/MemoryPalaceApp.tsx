@@ -2104,7 +2104,7 @@ export default function MemoryPalaceApp() {
     /** 一键清空记忆宫殿（本地 + 可选云端）。双重确认后执行。 */
     const handleWipeAll = async (includeRemote: boolean) => {
         const firstPrompt = includeRemote
-            ? '即将清空【本地 + 云端 Supabase】所有记忆宫殿数据，包括：\n\n' +
+            ? '即将清空【本地 + 云端】所有记忆宫殿数据，包括：\n\n' +
               '- 所有角色的记忆节点、向量、关联、事件盒\n- 高水位标记\n- 云端 memory_vectors 全表\n\n' +
               '此操作不可撤销。确定继续？'
             : '即将清空【本地】所有记忆宫殿数据（云端保留）。\n\n' +
@@ -3704,12 +3704,12 @@ export default function MemoryPalaceApp() {
                     )}
                 </details>
 
-                {/* 远程向量存储（Supabase，可选）— 默认折叠 */}
+                {/* 云端记忆同步（Cloudflare / Supabase，可选）— 默认折叠 */}
                 <details style={{ marginTop: 16, background: '#faf5ff', borderRadius: 16, padding: 16, border: '1px solid #e9d5ff' }}>
                     <summary style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                             <Icon name="cloud" size={14} />
-                            <span>远程向量存储（可选 / Supabase）</span>
+                            <span>云端记忆同步（Cloudflare / Supabase）</span>
                         </span>
                         {remoteVectorConfig.enabled && (
                             <span style={{
@@ -3736,7 +3736,7 @@ export default function MemoryPalaceApp() {
                             <div>
                                 <b>开了远程 ≠ 数据万事大吉。</b>
                                 目前是双写模式（本地也会存一份，不是挪到云上），
-                                Supabase 免费版也不保证永久可用。
+                                云服务也不能代替离线备份。
                                 <b>该导出备份还是要导出备份</b>，别指望一开了就高枕无忧。
                             </div>
                         </div>
@@ -3756,25 +3756,26 @@ export default function MemoryPalaceApp() {
                         </span>
                     </a>
 
-                    {/* 3 步操作提示 */}
+                    {/* 两种后端的操作提示 */}
                     <div style={{ marginTop: 12, padding: 12, borderRadius: 12, background: '#f5f3ff', fontSize: 11, color: '#5b21b6', lineHeight: 1.8 }}>
-                        <b>3 步搞定：</b><br/>
-                        1. 注册 Supabase（GitHub 一键登录，见上方教程）<br/>
-                        2. 在 Supabase SQL Editor 里运行下方初始化 SQL<br/>
-                        3. 填入 Project URL 和 anon key，点测试连接
+                        <b>推荐：自己的 Cloudflare 后端</b><br/>
+                        1. 按仓库 <code>worker/memory-sync/README.md</code> 部署 D1 + Vectorize Worker<br/>
+                        2. 填入 Worker URL 和你设置的 SYNC_TOKEN<br/>
+                        3. 测试成功后保存，再点“同步本地向量到远程”<br/>
+                        <span style={{ display: 'block', marginTop: 6 }}>原有 Supabase 仍兼容：运行下方 SQL，再填写 Project URL 和 anon key。</span>
                         <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer"
                             style={{
                                 marginTop: 8, display: 'inline-block', padding: '6px 12px', borderRadius: 8,
                                 background: '#7c3aed', color: 'white', fontSize: 11, fontWeight: 700, textDecoration: 'none',
                             }}>
-                            前往 Supabase →
+                            Supabase 旧方案 →
                         </a>
                     </div>
 
                     {/* 初始化 SQL */}
                     <div style={{ marginTop: 12 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                            <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>初始化 SQL</span>
+                            <span style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>Supabase 旧方案初始化 SQL</span>
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button onClick={() => setShowInitSQL(!showInitSQL)} style={{
                                     fontSize: 10, color: '#7c3aed', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer',
@@ -3809,18 +3810,18 @@ create table if not exists memory_vectors (
                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4 }}>复制此 SQL → Supabase Dashboard → SQL Editor → 运行</div>
                     </div>
 
-                    {/* Project URL & anon key */}
+                    {/* 同步服务 URL 与访问密钥；字段名沿用旧 Supabase 配置以兼容已有数据 */}
                     <div style={{ marginTop: 12 }}>
-                        <label className={labelClass}>PROJECT URL</label>
+                        <label className={labelClass}>同步服务 URL</label>
                         <input type="url" value={rvUrl} onChange={e => setRvUrl(e.target.value)}
-                            placeholder="https://xxxxx.supabase.co" className={inputClass} />
-                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>Settings → API → Project URL</div>
+                            placeholder="https://sullyos-memory-sync.xxxx.workers.dev" className={inputClass} />
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>Cloudflare Worker 地址，或 Supabase Project URL</div>
                     </div>
                     <div style={{ marginTop: 10 }}>
-                        <label className={labelClass}>ANON / PUBLIC KEY</label>
+                        <label className={labelClass}>访问密钥</label>
                         <input type="password" value={rvKey} onChange={e => setRvKey(e.target.value)}
-                            placeholder="eyJhbGciOiJIUzI1NiIs..." className={inputClass} />
-                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>Settings → API → anon public key</div>
+                            placeholder="Cloudflare SYNC_TOKEN 或 Supabase anon key" className={inputClass} />
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>只保存在当前浏览器配置中</div>
                     </div>
 
                     {/* 测试 + 保存 */}
@@ -4874,7 +4875,7 @@ create table if not exists memory_vectors (
                     </div>
                     <div style={{ fontSize: 11, color: '#7f1d1d', marginBottom: 12, lineHeight: 1.7 }}>
                         清空【所有角色】的记忆节点、向量、关联、事件盒、便利贴、期盼、高水位标记。
-                        可选择同时清空云端 Supabase <code>memory_vectors</code> 全表。
+                        可选择同时清空云端 <code>memory_vectors</code> 全表。
                         <b> 此操作不可撤销。</b>
                     </div>
 
@@ -4926,7 +4927,7 @@ create table if not exists memory_vectors (
                             {wiping ? '清空中…' : (
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                                     <Icon name="bomb" size={13} />
-                                    <span>清空本地 + 云端 Supabase</span>
+                                    <span>清空本地 + 云端</span>
                                 </span>
                             )}
                         </button>

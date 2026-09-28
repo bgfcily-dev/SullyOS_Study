@@ -18,7 +18,7 @@ const remoteConfig = (cloud: LiteCloudConfig): RemoteVectorConfig => ({
 
 const ensureCloud = (cloud: LiteCloudConfig): void => {
   if (!cloud.supabaseUrl.trim() || !cloud.supabaseAnonKey.trim()) {
-    throw new Error('请先填写 Supabase URL 和 Publishable / anon key');
+    throw new Error('请先填写同步服务 URL 和访问密钥');
   }
 };
 
@@ -84,12 +84,12 @@ export async function fetchLiteSyncedMemories(cloud: LiteCloudConfig, charId: st
     try {
       response = await fetch(memoryRestUrl(cloud, query), { headers: cloudHeaders(cloud) });
     } catch {
-      throw new Error('无法连接 Supabase，请检查网络、URL 和浏览器跨域设置');
+      throw new Error('无法连接云端同步服务，请检查网络、URL 和浏览器跨域设置');
     }
     const raw = await response.text();
     if (!response.ok) throw new Error(`读取已同步记忆失败（${response.status}）：${raw.slice(0, 180) || '未知错误'}`);
     let rows: unknown;
-    try { rows = raw ? JSON.parse(raw) : []; } catch { throw new Error('Supabase 返回了无法识别的数据'); }
+    try { rows = raw ? JSON.parse(raw) : []; } catch { throw new Error('云端同步服务返回了无法识别的数据'); }
     const page = parseLiteSyncedMemoryRows(rows);
     memories.push(...page);
     if (!Array.isArray(rows) || rows.length < pageSize) break;
@@ -144,7 +144,7 @@ export async function updateLiteSyncedMemory(input: {
       eventBoxId: null,
     };
     const saved = await upsertVector(remoteConfig(cloud), next.memoryId, next.charId, vector, node, embedding.dimensions, embedding.model);
-    if (!saved) throw new Error('新向量已生成，但 Supabase 没有保存修改');
+    if (!saved) throw new Error('新向量已生成，但云端同步服务没有保存修改');
     return { ...next, model: embedding.model, dimensions: embedding.dimensions };
   }
 
@@ -157,10 +157,10 @@ export async function updateLiteSyncedMemory(input: {
       body: JSON.stringify({ room: next.room, importance: next.importance, mood: next.mood, tags: next.tags }),
     });
   } catch {
-    throw new Error('无法连接 Supabase，修改没有保存');
+    throw new Error('无法连接云端同步服务，修改没有保存');
   }
   const responseText = await response.text();
-  if (!response.ok) throw new Error(`Supabase 修改失败（${response.status}）：${responseText.slice(0, 160)}`);
+  if (!response.ok) throw new Error(`云端修改失败（${response.status}）：${responseText.slice(0, 160)}`);
   try {
     const rows = JSON.parse(responseText);
     if (!Array.isArray(rows) || rows.length === 0) throw new Error('not-found');
@@ -178,10 +178,10 @@ export async function deleteLiteSyncedMemory(cloud: LiteCloudConfig, memory: Lit
   try {
     response = await fetch(memoryRestUrl(cloud, query), { method: 'DELETE', headers: { ...cloudHeaders(cloud), Prefer: 'return=representation' } });
   } catch {
-    throw new Error('无法连接 Supabase，记忆没有删除');
+    throw new Error('无法连接云端同步服务，记忆没有删除');
   }
   const responseText = await response.text();
-  if (!response.ok) throw new Error(`Supabase 删除失败（${response.status}）：${responseText.slice(0, 160)}`);
+  if (!response.ok) throw new Error(`云端删除失败（${response.status}）：${responseText.slice(0, 160)}`);
   try {
     const rows = JSON.parse(responseText);
     if (!Array.isArray(rows) || rows.length === 0) throw new Error('not-found');
@@ -351,6 +351,6 @@ export async function uploadPreparedLiteMemories(input: {
     return { memoryId, charId: batch.charId, vector: vectors[index], node, dimensions: embedding.dimensions, model: embedding.model };
   });
   const saved = await upsertVectorBatch(remoteConfig(cloud), items);
-  if (!saved) throw new Error('向量已生成，但写入 Supabase memory_vectors 失败');
+  if (!saved) throw new Error('向量已生成，但写入云端 memory_vectors 失败');
   return { saved: items.length };
 }

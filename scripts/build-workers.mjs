@@ -54,6 +54,12 @@ const WORKERS = [
     name: 'post-office',
     skipPublicOut: true,
   },
+  // memory-sync 是单用户 Cloudflare 后端（D1 + Vectorize），由 wrangler.toml
+  // 绑定资源；bundle 便于在 Cloudflare 面板核对/部署，不作为前端静态资源发布。
+  {
+    name: 'memory-sync',
+    skipPublicOut: true,
+  },
   // amsg = 主动消息 2.0 的单用户 worker（amsg-server/cloudflare, D1 + Cron Trigger）。
   // public/ 副本给设置页「复制 Worker 代码」按钮 fetch。amsg-server 2.6.0-next.2 起
   // 全 Web Crypto，和 instant 一样免 nodejs_compat flag。

@@ -125,7 +125,7 @@ function normalizedConfig(config: HandoffCloudConfig): HandoffCloudConfig {
 
 function ensureConfig(config: HandoffCloudConfig): HandoffCloudConfig {
   const clean = normalizedConfig(config);
-  if (!clean.supabaseUrl || !clean.supabaseAnonKey) throw new Error('请先填写 Supabase URL 和 Publishable / anon key');
+  if (!clean.supabaseUrl || !clean.supabaseAnonKey) throw new Error('请先填写同步服务 URL 和访问密钥');
   if (!clean.deviceId) throw new Error('当前设备缺少设备 ID，请刷新页面后重试');
   return clean;
 }
@@ -146,9 +146,9 @@ function tableUrl(config: HandoffCloudConfig, query: string): string {
 async function readError(response: Response): Promise<string> {
   const body = await response.text().catch(() => '');
   if (response.status === 404 || body.includes('shared_recent_contexts') || body.includes('char_id')) {
-    return '云端接力表尚未初始化或需要升级，请在轻量版设置中复制并运行最新初始化 SQL';
+    return '云端接力存储尚未初始化或需要升级';
   }
-  if (response.status === 401 || response.status === 403) return 'Supabase 认证失败，请检查 URL 和 Publishable / anon key';
+  if (response.status === 401 || response.status === 403) return '云端认证失败，请检查同步服务 URL 和访问密钥';
   return body ? `云端返回 ${response.status}：${body.slice(0, 180)}` : `云端返回 HTTP ${response.status}`;
 }
 

@@ -56,6 +56,7 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
     deviceName,
   };
   const configured = Boolean(cloudConfig.supabaseUrl && cloudConfig.supabaseAnonKey);
+  const isSupabase = /\.supabase\.co(?=\/|$)/i.test(cloudConfig.supabaseUrl);
 
   useEffect(() => {
     localStorage.setItem(DEVICE_NAME_KEY, deviceName.trim() || '主设备');
@@ -81,7 +82,7 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
 
   const publishRecent = async () => {
     if (!configured) {
-      setStatus({ kind: 'warn', text: '请先在记忆宫殿设置中配置远程向量存储（Supabase）' });
+      setStatus({ kind: 'warn', text: '请先在记忆宫殿设置中配置云端记忆同步' });
       return;
     }
     setBusy(true);
@@ -126,7 +127,7 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
 
   const receiveRecent = async () => {
     if (!configured) {
-      setStatus({ kind: 'warn', text: '请先在记忆宫殿设置中配置远程向量存储（Supabase）' });
+      setStatus({ kind: 'warn', text: '请先在记忆宫殿设置中配置云端记忆同步' });
       return;
     }
     setBusy(true);
@@ -191,11 +192,11 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
         <div className="rounded-2xl bg-slate-50 p-3 text-xs leading-5">
           {configured ? (
             <>
-              <div className="font-bold text-slate-700">已使用记忆宫殿中的 Supabase 配置</div>
+              <div className="font-bold text-slate-700">已使用记忆宫殿中的云端同步配置</div>
               <div className="mt-1 break-all text-slate-400">{remoteVectorConfig.supabaseUrl}</div>
               {cloudContext && <div className="mt-1 text-slate-500">云端第 {cloudContext.revision} 版 · 来自 {cloudContext.sourceDeviceName || '未命名设备'}</div>}
             </>
-          ) : <div>尚未配置 Supabase。请先到“记忆宫殿 → 设置 → 远程向量存储”完成配置。</div>}
+          ) : <div>尚未配置云端服务。请先到“记忆宫殿 → 设置 → 云端记忆同步”完成配置。</div>}
         </div>
 
         {status && (
@@ -214,9 +215,11 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
             <CloudArrowDown size={18} weight="bold" />
             接收轻量版新增消息
           </button>
-          <button type="button" onClick={() => { void navigator.clipboard.writeText(SHARED_CONTEXT_SQL); setStatus({ kind: 'ok', text: '最新初始化/升级 SQL 已复制，请到 Supabase SQL Editor 运行一次' }); }} className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-500">
-            <Copy size={15} />复制接力表初始化/升级 SQL
-          </button>
+          {isSupabase && (
+            <button type="button" onClick={() => { void navigator.clipboard.writeText(SHARED_CONTEXT_SQL); setStatus({ kind: 'ok', text: '最新初始化/升级 SQL 已复制，请到 Supabase SQL Editor 运行一次' }); }} className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-500">
+              <Copy size={15} />复制 Supabase 接力表初始化/升级 SQL
+            </button>
+          )}
         </div>
       </div>
     </Modal>

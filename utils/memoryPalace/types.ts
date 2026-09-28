@@ -381,12 +381,13 @@ export interface EmbeddingConfig {
     dimensions: number;         // 默认 1024
 }
 
-// ─── 远程向量存储配置 (Supabase pgvector) ────────────
+// ─── 远程向量存储配置（Supabase 或兼容 Cloudflare Worker）────────────
 
 export interface RemoteVectorConfig {
     enabled: boolean;
-    supabaseUrl: string;        // e.g. https://xxxxx.supabase.co
-    supabaseAnonKey: string;    // anon / public key
+    // 字段名为兼容旧配置而保留；也可分别保存 Worker URL 和 SYNC_TOKEN。
+    supabaseUrl: string;
+    supabaseAnonKey: string;
     initialized: boolean;       // 是否已建表
 }
 
