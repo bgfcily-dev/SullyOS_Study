@@ -930,7 +930,7 @@ export function LiteApp() {
       </section>}
 
       {stickerPickerOpen && <section className="composer-tray sticker-tray" aria-label="表情包">
-        <div className="composer-tray-title"><span>点击发送，长按修改或删除</span><button type="button" aria-label="关闭表情包" onClick={() => setStickerPickerOpen(false)}><X size={16} /></button></div>
+        <div className="composer-tray-title"><button type="button" aria-label="关闭表情包" onClick={() => setStickerPickerOpen(false)}><X size={16} /></button></div>
         <div className="sticker-grid">
           <button type="button" className="add-sticker-tile" onClick={() => setStickerEditor({ mode: 'add' })}><Plus size={24} /><span>添加</span></button>
           {stickers.map((sticker) => <button
