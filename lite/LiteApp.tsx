@@ -923,6 +923,13 @@ export function LiteApp() {
         <span>{notice.text}</span>
       </div>}
 
+      {(composerMenuOpen || stickerPickerOpen) && <button
+        type="button"
+        className="composer-dismiss-layer"
+        aria-label="关闭弹出面板"
+        onClick={() => { setComposerMenuOpen(false); setStickerPickerOpen(false); }}
+      />}
+
       {composerMenuOpen && <section className="composer-tray function-tray" aria-label="快捷功能">
         <button type="button" aria-label="重新回复本回合" title="重新回复本回合" disabled={sending || currentTurnReplyIds.length === 0} onClick={regenerateCurrentTurn}><ArrowClockwise size={21} /></button>
         <button type="button" aria-label="打开 API 设置" title="API 设置" onClick={() => openSettings('api', 'quick')}><GearSix size={21} /></button>
@@ -930,7 +937,6 @@ export function LiteApp() {
       </section>}
 
       {stickerPickerOpen && <section className="composer-tray sticker-tray" aria-label="表情包">
-        <div className="composer-tray-title"><button type="button" aria-label="关闭表情包" onClick={() => setStickerPickerOpen(false)}><X size={16} /></button></div>
         <div className="sticker-grid">
           <button type="button" className="add-sticker-tile" onClick={() => setStickerEditor({ mode: 'add' })}><Plus size={24} /><span>添加</span></button>
           {stickers.map((sticker) => <button
