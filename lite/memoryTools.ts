@@ -68,7 +68,7 @@ export function parseLiteSyncedMemoryRows(value: unknown): LiteSyncedMemory[] {
 export async function fetchLiteSyncedMemories(cloud: LiteCloudConfig, charId: string): Promise<LiteSyncedMemory[]> {
   ensureCloud(cloud);
   const cleanCharId = charId.trim();
-  if (!cleanCharId) throw new Error('尚未获取原版角色 ID，请先在原版同步一次近期上下文');
+  if (!cleanCharId) throw new Error('尚未获取原版角色 ID，请在原版记忆宫殿同步本地向量后重新读取云端');
   const pageSize = 500;
   const memories: LiteSyncedMemory[] = [];
   for (let offset = 0; offset < 5000; offset += pageSize) {
@@ -262,7 +262,7 @@ export async function prepareLiteContextMemories(input: {
 }): Promise<PreparedLiteMemoryBatch> {
   const { api, identity } = input;
   const charId = input.charId.trim();
-  if (!charId) throw new Error('尚未获取原版角色 ID，请先在原版同步一次近期上下文');
+  if (!charId) throw new Error('尚未获取原版角色 ID，请在原版记忆宫殿同步本地向量后重新读取云端');
   if (!api.baseUrl.trim() || !api.apiKey.trim() || !api.model.trim()) {
     throw new Error('请先完成用于整理记忆的语言模型 API 配置');
   }

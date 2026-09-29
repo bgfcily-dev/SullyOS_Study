@@ -891,6 +891,8 @@ export default function MemoryPalaceApp() {
     const [rvTestResult, setRvTestResult] = useState('');
     const [rvTesting, setRvTesting] = useState(false);
     const [rvSyncing, setRvSyncing] = useState(false);
+    const [rvSyncProgress, setRvSyncProgress] = useState<{ done: number; total: number; synced: number; failed: number; skipped: number } | null>(null);
+    const [rvSyncStatus, setRvSyncStatus] = useState('');
     const [rvReceiving, setRvReceiving] = useState(false);
     const [showInitSQL, setShowInitSQL] = useState(false);
 
@@ -1744,32 +1746,70 @@ export default function MemoryPalaceApp() {
     };
 
     // 远程向量：同步本地到远程
-    const handleSyncToRemote = async () => {
+    const handleSyncToRemote = async (force = false) => {
         setRvSyncing(true);
+        setRvSyncProgress(null);
+        setRvSyncStatus('正在读取本地向量…');
         trackEvent('同步记忆向量到云端');
         try {
             const { syncLocalToRemote } = await import('../utils/memoryPalace/supabaseVector');
-            const { MemoryNodeDB } = await import('../utils/memoryPalace/db');
+            let orphaned = 0;
             const result = await syncLocalToRemote(
                 remoteVectorConfig,
                 async () => {
-                    const allVectors = await (await import('../utils/db')).openDB().then(db => new Promise<any[]>((resolve, reject) => {
-                        const tx = db.transaction('memory_vectors', 'readonly');
-                        const req = tx.objectStore('memory_vectors').getAll();
-                        req.onsuccess = () => resolve(req.result || []);
-                        req.onerror = () => reject(req.error);
-                    }));
+                    const db = await (await import('../utils/db')).openDB();
+                    const { allVectors, allNodes } = await new Promise<{ allVectors: any[]; allNodes: any[] }>((resolve, reject) => {
+                        const tx = db.transaction(['memory_vectors', 'memory_nodes'], 'readonly');
+                        const vectorsRequest = tx.objectStore('memory_vectors').getAll();
+                        const nodesRequest = tx.objectStore('memory_nodes').getAll();
+                        tx.oncomplete = () => resolve({ allVectors: vectorsRequest.result || [], allNodes: nodesRequest.result || [] });
+                        tx.onerror = () => reject(tx.error);
+                    });
+                    const nodesById = new Map(allNodes.map(node => [node.id, node]));
                     const items = [];
                     for (const v of allVectors) {
-                        const node = await MemoryNodeDB.getById(v.memoryId);
+                        const node = nodesById.get(v.memoryId);
                         if (node) items.push({ memoryId: v.memoryId, charId: node.charId, vector: v.vector, node, dimensions: v.dimensions, model: v.model });
+                        else orphaned++;
                     }
                     return items;
                 },
-                () => {},
+                (done, total, synced, failed, skipped) => {
+                    setRvSyncProgress({ done, total, synced, failed, skipped });
+                    setRvSyncStatus(force ? '正在全量覆盖云端向量…' : '正在检查云端已有记录并补传…');
+                },
+                { force },
             );
-            addToast(`同步完成: ${result.synced} 条成功, ${result.failed} 条失败`, result.failed > 0 ? 'error' : 'success');
-        } catch (e: any) { addToast(`同步失败: ${e.message}`, 'error'); }
+            let handoffError = char ? '' : '请先在原版选择角色';
+            if (char) {
+                try {
+                    const { fetchSharedContext, publishSharedContext } = await import('../utils/recentContextHandoff');
+                    const handoffConfig = {
+                        supabaseUrl: remoteVectorConfig.supabaseUrl,
+                        supabaseAnonKey: remoteVectorConfig.supabaseAnonKey,
+                        deviceId: 'main-memory-palace',
+                        deviceName: '原版记忆宫殿',
+                    };
+                    const previous = await fetchSharedContext(handoffConfig);
+                    await publishSharedContext({
+                        config: handoffConfig,
+                        charId: char.id,
+                        sharedMessages: previous?.charId === char.id ? previous.messages : [],
+                        localMessages: [],
+                        previousRevision: previous?.revision,
+                        allowEmptyMessages: true,
+                    });
+                } catch (error: any) {
+                    handoffError = error?.message || '未知错误';
+                }
+            }
+            const summary = `${force ? '全量覆盖' : '补传'}完成：${result.synced} 条上传、${result.skipped} 条云端已有跳过、${result.failed} 条失败${orphaned ? `，${orphaned} 条缺少本地记忆正文未上传` : ''}`;
+            setRvSyncStatus(handoffError ? `${summary}；角色 ID 未发布：${handoffError}` : `${summary}；当前角色 ID 已发布给 Lite`);
+            addToast(summary, result.failed > 0 || orphaned > 0 || handoffError ? 'error' : 'success');
+        } catch (e: any) {
+            setRvSyncStatus(`同步失败：${e.message}`);
+            addToast(`同步失败: ${e.message}`, 'error');
+        }
         setRvSyncing(false);
     };
 
@@ -3761,7 +3801,7 @@ export default function MemoryPalaceApp() {
                         <b>推荐：自己的 Cloudflare 后端</b><br/>
                         1. 按仓库 <code>worker/memory-sync/README.md</code> 部署 D1 + Vectorize Worker<br/>
                         2. 填入 Worker URL 和你设置的 SYNC_TOKEN<br/>
-                        3. 测试成功后保存，再点“同步本地向量到远程”<br/>
+                        3. 测试成功后保存，再点“只补传云端缺少的向量”<br/>
                         <span style={{ display: 'block', marginTop: 6 }}>原有 Supabase 仍兼容：运行下方 SQL，再填写 Project URL 和 anon key。</span>
                         <a href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer"
                             style={{
@@ -3862,7 +3902,7 @@ create table if not exists memory_vectors (
 
                     {/* 已启用后的操作 */}
                     {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (
-                        <button onClick={handleSyncToRemote} disabled={rvSyncing || rvReceiving}
+                        <button onClick={() => void handleSyncToRemote()} disabled={rvSyncing || rvReceiving}
                             style={{
                                 width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 12,
                                 border: '1px solid #e9d5ff', fontWeight: 600, fontSize: 12,
@@ -3871,13 +3911,32 @@ create table if not exists memory_vectors (
                                 opacity: (rvSyncing || rvReceiving) ? 0.5 : 1,
                             }}
                         >
-                            {rvSyncing ? '同步中...' : (
+                            {rvSyncing ? (rvSyncProgress ? `已处理 ${rvSyncProgress.done}/${rvSyncProgress.total} 条` : '读取本地向量…') : (
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                                     <Icon name="refresh" size={13} />
-                                    <span>同步本地向量到远程</span>
+                                    <span>只补传云端缺少的向量</span>
                                 </span>
                             )}
                         </button>
+                    )}
+                    {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (
+                        <button onClick={() => void handleSyncToRemote(true)} disabled={rvSyncing || rvReceiving}
+                            style={{
+                                width: '100%', marginTop: 6, padding: '7px 0', borderRadius: 10,
+                                border: 'none', background: 'none', fontSize: 11, color: '#7c3aed',
+                                cursor: (rvSyncing || rvReceiving) ? 'not-allowed' : 'pointer',
+                                opacity: (rvSyncing || rvReceiving) ? 0.5 : 1,
+                            }}
+                        >全量覆盖修复（云端记录存在但检索不到时使用）</button>
+                    )}
+                    {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (rvSyncProgress || rvSyncStatus) && (
+                        <div role="status" aria-live="polite" style={{ marginTop: 8, fontSize: 11, color: '#6d28d9' }}>
+                            {rvSyncProgress && <>
+                                <div>已检查 {rvSyncProgress.done}/{rvSyncProgress.total} 条 · 补传 {rvSyncProgress.synced} 条 · 跳过 {rvSyncProgress.skipped} 条{rvSyncProgress.failed > 0 ? ` · 失败 ${rvSyncProgress.failed} 条` : ''}</div>
+                                <progress value={rvSyncProgress.done} max={Math.max(rvSyncProgress.total, 1)} style={{ width: '100%', marginTop: 4, accentColor: '#7c3aed' }} />
+                            </>}
+                            {rvSyncStatus && <div>{rvSyncStatus}</div>}
+                        </div>
                     )}
                     {remoteVectorConfig.enabled && remoteVectorConfig.initialized && (
                         <button onClick={handleReceiveFromRemote} disabled={rvReceiving || rvSyncing}

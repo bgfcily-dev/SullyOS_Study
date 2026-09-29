@@ -267,6 +267,7 @@ export async function upsertVectorBatch(
         dimensions: number;
         model?: string;
     }[],
+    onFailure?: (status?: number) => void,
 ): Promise<boolean> {
     if (items.length === 0) return true;
     try {
@@ -306,8 +307,10 @@ export async function upsertVectorBatch(
             body: JSON.stringify(body),
         });
 
+        if (!res.ok) onFailure?.(res.status);
         return res.ok;
     } catch {
+        onFailure?.();
         return false;
     }
 }
@@ -515,24 +518,15 @@ export async function deleteVector(config: RemoteVectorConfig, memoryId: string)
  * 获取远程向量数量（用于 UI 显示）
  */
 export async function getVectorCount(config: RemoteVectorConfig, charId?: string): Promise<number> {
-    try {
-        const filter = charId ? `&char_id=eq.${encodeURIComponent(charId)}` : '';
-        const res = await fetch(restUrl(config, `/memory_vectors?select=memory_id${filter}`), {
-            method: 'HEAD',
-            headers: {
-                ...headers(config),
-                'Prefer': 'count=exact',
-            },
-        });
-        const range = res.headers.get('content-range');
-        if (range) {
-            const match = range.match(/\/(\d+)/);
-            if (match) return parseInt(match[1], 10);
-        }
-        return 0;
-    } catch {
-        return 0;
-    }
+    const filter = charId ? `&char_id=eq.${encodeURIComponent(charId)}` : '';
+    const res = await fetch(restUrl(config, `/memory_vectors?select=memory_id${filter}`), {
+        method: 'HEAD',
+        headers: { ...headers(config), 'Prefer': 'count=exact' },
+    });
+    if (!res.ok) throw new Error(`查询云端向量数量失败（HTTP ${res.status}）`);
+    const match = res.headers.get('content-range')?.match(/\/(\d+)/);
+    if (!match) throw new Error('云端未返回向量总数，请检查同步服务版本');
+    return parseInt(match[1], 10);
 }
 
 export interface RemoteVectorSnapshot {
@@ -626,30 +620,84 @@ export async function fetchRemoteVectorsForCharacter(
     return { fetched, invalid };
 }
 
-/**
- * 将本地向量同步到远程（一次性迁移）
- */
+/** 只用 HEAD/count 检查远端 ID，避免从 Worker 下载整批向量正文。 */
+async function findMissingRemoteVectorIds(config: RemoteVectorConfig, ids: string[]): Promise<string[]> {
+    if (ids.length === 0) return [];
+    // PostgREST 和兼容 Worker 都支持 in.(...)；含特殊字符的 ID 改用单条 eq 查询。
+    if (ids.length > 1 && ids.some(id => !/^[A-Za-z0-9_-]+$/.test(id))) {
+        const middle = Math.floor(ids.length / 2);
+        return [
+            ...await findMissingRemoteVectorIds(config, ids.slice(0, middle)),
+            ...await findMissingRemoteVectorIds(config, ids.slice(middle)),
+        ];
+    }
+    const filter = ids.length === 1
+        ? `memory_id=eq.${encodeURIComponent(ids[0])}`
+        : `memory_id=in.(${ids.map(encodeURIComponent).join(',')})`;
+    const response = await fetch(restUrl(config, `/memory_vectors?select=memory_id&${filter}`), {
+        method: 'HEAD',
+        headers: { ...headers(config), Prefer: 'count=exact' },
+    });
+    if (!response.ok) throw new Error(`检查云端已有向量失败（HTTP ${response.status}）`);
+    const countText = response.headers.get('content-range')?.match(/\/(\d+)/)?.[1];
+    if (countText == null) throw new Error('云端未返回向量数量，无法安全判断哪些需要补传');
+    const count = Number(countText);
+    if (count === 0) return ids;
+    if (count === ids.length) return [];
+    if (ids.length === 1) throw new Error('云端返回了不一致的向量数量，已停止补传');
+    const middle = Math.floor(ids.length / 2);
+    return [
+        ...await findMissingRemoteVectorIds(config, ids.slice(0, middle)),
+        ...await findMissingRemoteVectorIds(config, ids.slice(middle)),
+    ];
+}
+
+/** 将本地向量补传到远程；force 用于修复远端索引与数据库不一致。 */
 export async function syncLocalToRemote(
     config: RemoteVectorConfig,
     getLocalVectors: () => Promise<{ memoryId: string; charId: string; vector: number[] | Float32Array | Uint8Array; node: MemoryNode; dimensions: number; model?: string }[]>,
-    onProgress?: (done: number, total: number) => void,
-): Promise<{ synced: number; failed: number }> {
+    onProgress?: (done: number, total: number, synced: number, failed: number, skipped: number) => void,
+    options: { force?: boolean } = {},
+): Promise<{ synced: number; failed: number; skipped: number }> {
     const locals = await getLocalVectors();
-    if (locals.length === 0) return { synced: 0, failed: 0 };
-
-    let synced = 0, failed = 0;
-    const BATCH = 50;
-
-    for (let i = 0; i < locals.length; i += BATCH) {
-        const batch = locals.slice(i, i + BATCH);
-        const ok = await upsertVectorBatch(config, batch);
-        if (ok) {
-            synced += batch.length;
-        } else {
-            failed += batch.length;
-        }
-        onProgress?.(Math.min(i + BATCH, locals.length), locals.length);
+    if (locals.length === 0) {
+        onProgress?.(0, 0, 0, 0, 0);
+        return { synced: 0, failed: 0, skipped: 0 };
     }
 
-    return { synced, failed };
+    let synced = 0, failed = 0, skipped = 0;
+    const CHECK_BATCH = 50;
+    const UPLOAD_BATCH = 20;
+    onProgress?.(0, locals.length, 0, 0, 0);
+
+    const upload = async (batch: typeof locals): Promise<{ synced: number; failed: number }> => {
+        let failureStatus: number | undefined;
+        if (await upsertVectorBatch(config, batch, status => { failureStatus = status; })) return { synced: batch.length, failed: 0 };
+        if (!failureStatus || [401, 403, 404, 429].includes(failureStatus)) {
+            throw new Error(`云端向量上传中断${failureStatus ? `（HTTP ${failureStatus}）` : '（网络连接失败）'}`);
+        }
+        if (batch.length === 1 && failureStatus >= 500) {
+            throw new Error(`云端向量上传中断（HTTP ${failureStatus}）`);
+        }
+        if (batch.length === 1) return { synced: 0, failed: 1 };
+        const middle = Math.floor(batch.length / 2);
+        const left = await upload(batch.slice(0, middle));
+        const right = await upload(batch.slice(middle));
+        return { synced: left.synced + right.synced, failed: left.failed + right.failed };
+    };
+
+    for (let i = 0; i < locals.length; i += CHECK_BATCH) {
+        const batch = locals.slice(i, i + CHECK_BATCH);
+        const missingIds = options.force ? null : new Set(await findMissingRemoteVectorIds(config, batch.map(item => item.memoryId)));
+        const missing = missingIds ? batch.filter(item => missingIds.has(item.memoryId)) : batch;
+        skipped += batch.length - missing.length;
+        for (let offset = 0; offset < missing.length; offset += UPLOAD_BATCH) {
+            const result = await upload(missing.slice(offset, offset + UPLOAD_BATCH));
+            synced += result.synced;
+            failed += result.failed;
+        }
+        onProgress?.(Math.min(i + CHECK_BATCH, locals.length), locals.length, synced, failed, skipped);
+    }
+
+    return { synced, failed, skipped };
 }

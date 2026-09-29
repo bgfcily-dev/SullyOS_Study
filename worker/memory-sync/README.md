@@ -40,13 +40,13 @@ pnpm dlx wrangler d1 execute sullyos-memory-sync --remote --file worker/memory-s
 1. “同步服务 URL”填写 Worker 地址，末尾不要加 `/rest/v1`。
 2. “访问密钥”填写刚才设置的 `SYNC_TOKEN`。
 3. 点“测试连接”，成功后保存。
-4. 在旧设备点“同步本地向量到远程”；新设备点“接收远程记忆到本机”。
+4. 在旧设备点“只补传云端缺少的向量”；新设备点“接收远程记忆到本机”。
 
 原有 Supabase 地址和 anon key 仍可使用。Cloudflare Worker 模拟的是项目已经使用的那一小部分 PostgREST 接口，所以无需切换数据格式。
 
 ## 数据迁移
 
-如果旧浏览器里仍有完整本地记忆，部署后直接点击“同步本地向量到远程”即可。这个操作会按 `memory_id` 覆盖写入，重复执行不会产生重复项。
+如果旧浏览器里仍有完整本地记忆，部署后直接点击“只补传云端缺少的向量”即可。它会按 `memory_id` 检查并跳过已有记录，重复执行不会产生重复项。若旧版上传曾出现 D1 已写入而 Vectorize 未索引的半成功数据，可点“全量覆盖修复”重建远端索引。
 
 如果本地数据已经丢失，只能先从仍可访问的 Supabase 拉回本机，再把配置改成 Cloudflare 后重新上传；Worker 无法读取已经失联的 Supabase 项目。
 

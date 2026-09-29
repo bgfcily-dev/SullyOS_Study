@@ -172,12 +172,13 @@ export async function publishSharedContext(input: {
   sharedMessages: HandoffMessage[];
   localMessages: HandoffMessage[];
   previousRevision?: number;
+  allowEmptyMessages?: boolean;
 }): Promise<SharedRecentContext> {
   const clean = ensureConfig(input.config);
   const charId = input.charId.trim();
   if (!charId) throw new Error('缺少原版角色 ID，请先在原版聊天页发布一次近期上下文');
   const messages = mergeHandoffMessages(input.sharedMessages, input.localMessages);
-  if (messages.length === 0) throw new Error('当前没有可以同步的聊天内容');
+  if (messages.length === 0 && !input.allowEmptyMessages) throw new Error('当前没有可以同步的聊天内容');
   const payload = {
     brain_id: HANDOFF_BRAIN_ID,
     char_id: charId,
