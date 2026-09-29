@@ -10,14 +10,13 @@ import {
   ImageSquare,
   List,
   Palette,
-  PaperPlaneRight,
+  CaretUp,
   PencilSimple,
   Plus,
   Smiley,
   Sparkle,
   Trash,
   WarningCircle,
-  Lightning,
   X,
 } from '@phosphor-icons/react';
 import { clearSharedContext, fetchSharedContext, publishSharedContext, SHARED_CONTEXT_SQL, testSharedContextConnection } from './cloud';
@@ -90,8 +89,6 @@ const formatTimestamp = (timestamp: number, withDate = false): string => {
     return withDate ? `${date.getMonth() + 1}/${date.getDate()} ${time}` : time;
   }
 };
-
-const formatSyncTime = (timestamp: number): string => formatTimestamp(timestamp, true);
 
 const formatTokenCount = (count: number): string => count >= 1000
   ? `${(count / 1000).toFixed(count >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`
@@ -178,7 +175,6 @@ export function LiteApp() {
   const [syncedMemoriesBusy, setSyncedMemoriesBusy] = useState(false);
   const [syncedMemoryEditor, setSyncedMemoryEditor] = useState<LiteSyncedMemory | null>(null);
   const [showSql, setShowSql] = useState(false);
-  const [lastRecallCount, setLastRecallCount] = useState(0);
   const [lastTokenUsage, setLastTokenUsage] = useState<LiteTokenUsage | null>(null);
   const messageStageRef = useRef<HTMLElement>(null);
   const stickerNameRef = useRef<HTMLInputElement>(null);
@@ -431,13 +427,9 @@ export function LiteApp() {
             cloud: cloudConfig,
             embedding: embeddingConfig,
           });
-          setLastRecallCount(memories.length);
         } catch (error: any) {
-          setLastRecallCount(0);
           setNotice({ kind: 'info', text: `长期记忆暂未读取，本轮仍会继续聊天：${error?.message || '未知错误'}` });
         }
-      } else {
-        setLastRecallCount(0);
       }
       const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: localMessagesForRequest, memories, stickers });
       setLastTokenUsage(reply.usage);
@@ -860,35 +852,21 @@ export function LiteApp() {
           <div className="lite-avatar" aria-hidden="true">
             {identity.characterAvatar ? <img src={identity.characterAvatar} alt="" /> : (identity.characterName || 'S').slice(0, 1)}
           </div>
-          <div>
-            <h1>{identity.characterName || 'Sully'}</h1>
-            <p><span className={`status-dot ${cloudContext?.charId ? 'online' : ''}`} />{cloudContext?.charId ? '已连接' : '未连接'}</p>
+          <div
+            className={`token-usage-pill${lastTokenUsage ? ' has-usage' : ''}`}
+            title={lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} tokens` : '完成一次回复后显示本次 Token 用量'}
+            aria-label={lastTokenUsage ? `本次调用使用 ${lastTokenUsage.totalTokens} tokens` : '暂无本次调用 Token 用量'}
+          >
+            {lastTokenUsage ? formatTokenCount(lastTokenUsage.totalTokens) : '0'}
           </div>
+          <h1>{identity.characterName || 'Sully'}</h1>
         </div>
         <div className="header-actions">
           <button className="icon-button" type="button" aria-label="打开角色与记忆设置" onClick={() => openSettings('role', 'main')}>
             <GearSix size={22} weight="bold" />
           </button>
         </div>
-        <div
-          className={`token-usage-pill${lastTokenUsage ? ' has-usage' : ''}`}
-          title={lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} tokens` : '完成一次回复后显示本次 Token 用量'}
-          aria-label={lastTokenUsage ? `本次调用使用 ${lastTokenUsage.totalTokens} tokens` : '暂无本次调用 Token 用量'}
-        >
-          <Lightning size={12} weight="fill" />
-          <span>{lastTokenUsage ? `本次 ${formatTokenCount(lastTokenUsage.totalTokens)} tokens` : '本次 — tokens'}</span>
-        </div>
       </header>
-
-      <section className="context-strip" aria-label="连接状态">
-        <button type="button" className="strip-button" onClick={() => void refreshCloud()} disabled={!cloudReady || cloudBusy}>
-          <Cloud size={17} weight="bold" />
-          {cloudContext ? `v${cloudContext.revision} · ${formatSyncTime(cloudContext.updatedAt)}${lastRecallCount ? ` · 记忆${lastRecallCount}` : ''}` : cloudReady ? '读取云端' : '云端未配置'}
-        </button>
-        <select className="api-chip" value={activeApiId} onChange={(event) => setActiveApiId(event.target.value)} aria-label="切换聊天 API">
-          {apiProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
-        </select>
-      </section>
 
       <section
         className={`message-stage${chatBackground ? ' has-chat-background' : ''}${shownMessages.length === 0 ? ' is-empty' : ''}`}
@@ -988,7 +966,7 @@ export function LiteApp() {
             <Smiley size={23} />
           </button>
           <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
-            <PaperPlaneRight size={22} weight="fill" />
+            <CaretUp size={23} weight="fill" />
           </button>
         </form>
       </div>
