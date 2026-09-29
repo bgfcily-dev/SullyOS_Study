@@ -846,12 +846,19 @@ export function LiteApp() {
   };
 
   return (
-    <main className={`lite-shell theme-${theme}`} style={{ '--lite-message-font-size': `${fontSize}px` } as React.CSSProperties}>
+    <main
+      className={`lite-shell theme-${theme}${chatBackground ? ' has-chat-background' : ''}`}
+      style={{
+        '--lite-message-font-size': `${fontSize}px`,
+        ...(chatBackground ? { backgroundImage: `linear-gradient(rgba(20, 20, 20, .08), rgba(20, 20, 20, .08)), url(${chatBackground})` } : {}),
+      } as React.CSSProperties}
+    >
       <header className="lite-header">
         <div className="lite-identity">
           <div className="lite-avatar" aria-hidden="true">
             {identity.characterAvatar ? <img src={identity.characterAvatar} alt="" /> : (identity.characterName || 'S').slice(0, 1)}
           </div>
+          <h1>{identity.characterName || 'Sully'}</h1>
           <div
             className={`token-usage-pill${lastTokenUsage ? ' has-usage' : ''}`}
             title={lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} tokens` : '完成一次回复后显示本次 Token 用量'}
@@ -859,7 +866,6 @@ export function LiteApp() {
           >
             {lastTokenUsage ? formatTokenCount(lastTokenUsage.totalTokens) : '0'}
           </div>
-          <h1>{identity.characterName || 'Sully'}</h1>
         </div>
         <div className="header-actions">
           <button className="icon-button" type="button" aria-label="打开角色与记忆设置" onClick={() => openSettings('role', 'main')}>
@@ -872,7 +878,6 @@ export function LiteApp() {
         className={`message-stage${chatBackground ? ' has-chat-background' : ''}${shownMessages.length === 0 ? ' is-empty' : ''}`}
         aria-live="polite"
         ref={messageStageRef}
-        style={chatBackground ? { backgroundImage: `linear-gradient(rgba(20, 20, 20, .08), rgba(20, 20, 20, .08)), url(${chatBackground})` } : undefined}
       >
         {shownMessages.length === 0 ? <div className="empty-card">
           <div className="empty-icon"><Sparkle size={28} weight="fill" /></div>
@@ -973,7 +978,7 @@ export function LiteApp() {
 
       {settingsOpen && (
         <div className="sheet-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="settings-sheet" role="dialog" aria-modal="true" aria-labelledby="lite-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section className={`settings-sheet settings-sheet-${settingsScope}`} role="dialog" aria-modal="true" aria-labelledby="lite-settings-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="sheet-handle" />
             <div className="sheet-title-row">
               <div>
