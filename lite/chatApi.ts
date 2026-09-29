@@ -2,6 +2,30 @@ import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteS
 import { mergeMessageHistory } from './context';
 import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteStickerPrompt, buildLiteTimeAwarenessPrompt, formatLiteMessageTime } from './prompts';
 
+export interface LiteTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface LiteReplyResult {
+  text: string;
+  usage: LiteTokenUsage | null;
+}
+
+export function extractLiteTokenUsage(value: unknown): LiteTokenUsage | null {
+  if (!value || typeof value !== 'object') return null;
+  const usage = value as Record<string, unknown>;
+  const promptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const completionTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+  const reportedTotal = Number(usage.total_tokens ?? 0);
+  const safePrompt = Number.isFinite(promptTokens) && promptTokens >= 0 ? Math.round(promptTokens) : 0;
+  const safeCompletion = Number.isFinite(completionTokens) && completionTokens >= 0 ? Math.round(completionTokens) : 0;
+  const safeReportedTotal = Number.isFinite(reportedTotal) && reportedTotal >= 0 ? Math.round(reportedTotal) : 0;
+  const totalTokens = safeReportedTotal || safePrompt + safeCompletion;
+  return totalTokens > 0 ? { promptTokens: safePrompt, completionTokens: safeCompletion, totalTokens } : null;
+}
+
 export function liteChatUrl(baseUrl: string): string {
   const clean = baseUrl.trim().replace(/\/+$/, '');
   return clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
@@ -60,7 +84,7 @@ export async function requestLiteReply(input: {
   stickers?: LiteSticker[];
   memories?: LiteMemoryRecall[];
   signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<LiteReplyResult> {
   const { api, cloudContext, localMessages } = input;
   if (!api.baseUrl || !api.apiKey || !api.model) throw new Error('请先在设置中填写当前 API 的地址、密钥和模型');
 
@@ -129,7 +153,7 @@ export async function requestLiteReply(input: {
     if (!text.trim()) text = extractLiteText(message?.reasoning_content);
     text = text.replace(/<(think|thinking|thought)>[\s\S]*?<\/\1>/gi, '').trim();
     if (!text) throw new Error('API 返回成功，但没有找到回复正文');
-    return text;
+    return { text, usage: extractLiteTokenUsage(data?.usage) };
   } catch (error: any) {
     if (error?.name === 'AbortError') throw new Error('等待回复超过两分钟，已停止本次请求');
     if (error?.name === 'TypeError') throw new Error('无法连接聊天 API，请检查地址、网络以及服务是否允许网页跨域访问');

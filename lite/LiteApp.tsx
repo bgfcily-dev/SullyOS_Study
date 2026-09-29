@@ -17,11 +17,13 @@ import {
   Sparkle,
   Trash,
   WarningCircle,
+  Lightning,
   X,
 } from '@phosphor-icons/react';
 import { clearSharedContext, fetchSharedContext, publishSharedContext, SHARED_CONTEXT_SQL, testSharedContextConnection } from './cloud';
 import { mergeMessageHistory, newLiteMessage } from './context';
 import { requestLiteReply, testLiteChatConnection } from './chatApi';
+import type { LiteTokenUsage } from './chatApi';
 import {
   loadActiveApiId,
   loadApiProfiles,
@@ -90,6 +92,10 @@ const formatTimestamp = (timestamp: number, withDate = false): string => {
 };
 
 const formatSyncTime = (timestamp: number): string => formatTimestamp(timestamp, true);
+
+const formatTokenCount = (count: number): string => count >= 1000
+  ? `${(count / 1000).toFixed(count >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`
+  : String(count);
 
 const keyStatus = (value: string): string => value.trim()
   ? `已保存密钥（末尾 ${value.trim().slice(-4)}）`
@@ -173,6 +179,7 @@ export function LiteApp() {
   const [syncedMemoryEditor, setSyncedMemoryEditor] = useState<LiteSyncedMemory | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [lastRecallCount, setLastRecallCount] = useState(0);
+  const [lastTokenUsage, setLastTokenUsage] = useState<LiteTokenUsage | null>(null);
   const messageStageRef = useRef<HTMLElement>(null);
   const stickerNameRef = useRef<HTMLInputElement>(null);
   const stickerUrlRef = useRef<HTMLInputElement>(null);
@@ -406,6 +413,7 @@ export function LiteApp() {
       return;
     }
     setNotice(null);
+    setLastTokenUsage(null);
     setSending(true);
     try {
       const latestCloud = cloudReady ? await refreshCloud(true) : cloudContext;
@@ -432,7 +440,8 @@ export function LiteApp() {
         setLastRecallCount(0);
       }
       const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: localMessagesForRequest, memories, stickers });
-      const replyParts = splitLiteReplyParts(reply, stickers.map((sticker) => sticker.name));
+      setLastTokenUsage(reply.usage);
+      const replyParts = splitLiteReplyParts(reply.text, stickers.map((sticker) => sticker.name));
       const baseTime = Date.now();
       const replyMessages = replyParts.map((part, index) => ({
         ...newLiteMessage('assistant', part.kind === 'sticker' ? `[表情包：${part.name}]` : part.content),
@@ -861,6 +870,14 @@ export function LiteApp() {
             <GearSix size={22} weight="bold" />
           </button>
         </div>
+        <div
+          className={`token-usage-pill${lastTokenUsage ? ' has-usage' : ''}`}
+          title={lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} tokens` : '完成一次回复后显示本次 Token 用量'}
+          aria-label={lastTokenUsage ? `本次调用使用 ${lastTokenUsage.totalTokens} tokens` : '暂无本次调用 Token 用量'}
+        >
+          <Lightning size={12} weight="fill" />
+          <span>{lastTokenUsage ? `本次 ${formatTokenCount(lastTokenUsage.totalTokens)} tokens` : '本次 — tokens'}</span>
+        </div>
       </header>
 
       <section className="context-strip" aria-label="连接状态">
@@ -949,30 +966,32 @@ export function LiteApp() {
         </div>
       </section>}
 
-      <form className="composer" onSubmit={sendMessage}>
+      <div className="composer-dock">
         <button className="menu-button" type="button" aria-label="打开功能菜单" title="功能菜单" onClick={() => { setComposerMenuOpen((open) => !open); setStickerPickerOpen(false); }}>
           <List size={23} />
         </button>
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onComposerKeyDown}
-          onFocus={() => window.setTimeout(() => {
-            const stage = messageStageRef.current;
-            if (stage) stage.scrollTop = stage.scrollHeight;
-          }, 180)}
-          placeholder="说点什么…"
-          rows={1}
-          aria-label="聊天内容"
-          enterKeyHint="send"
-        />
-        <button className="sticker-button" type="button" aria-label="选择表情包" title="选择表情包" onClick={() => { setStickerPickerOpen((open) => !open); setComposerMenuOpen(false); }}>
-          <Smiley size={23} />
-        </button>
-        <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
-          <PaperPlaneRight size={22} weight="fill" />
-        </button>
-      </form>
+        <form className="composer" onSubmit={sendMessage}>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onComposerKeyDown}
+            onFocus={() => window.setTimeout(() => {
+              const stage = messageStageRef.current;
+              if (stage) stage.scrollTop = stage.scrollHeight;
+            }, 180)}
+            placeholder="说点什么…"
+            rows={1}
+            aria-label="聊天内容"
+            enterKeyHint="send"
+          />
+          <button className="sticker-button" type="button" aria-label="选择表情包" title="选择表情包" onClick={() => { setStickerPickerOpen((open) => !open); setComposerMenuOpen(false); }}>
+            <Smiley size={23} />
+          </button>
+          <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
+            <PaperPlaneRight size={22} weight="fill" />
+          </button>
+        </form>
+      </div>
 
       {settingsOpen && (
         <div className="sheet-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
