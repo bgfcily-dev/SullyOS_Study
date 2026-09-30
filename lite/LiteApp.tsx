@@ -58,8 +58,7 @@ import { splitLiteReplyParts } from './replyChunks';
 import type { LiteApiProfile, LiteCloudConfig, LiteEmbeddingConfig, LiteIdentity, LiteMemoryRecall, LiteMemorySummaryApi, LiteMessage, LiteSticker, LiteSyncedMemory, LiteTheme, LiteVectorStats, PreparedLiteMemoryBatch, SharedRecentContext } from './types';
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null;
-type SettingsSection = 'api' | 'role' | 'memory' | 'synced' | 'appearance';
-type SettingsScope = 'quick' | 'main';
+type SettingsSection = 'api' | 'role' | 'profile' | 'memory' | 'synced' | 'appearance';
 type ModelTarget = 'chat' | 'memory';
 type StickerEditor = { mode: 'add' } | { mode: 'edit'; sticker: LiteSticker };
 
@@ -137,7 +136,6 @@ export function LiteApp() {
   const [draft, setDraft] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('api');
-  const [settingsScope, setSettingsScope] = useState<SettingsScope>('quick');
   const [theme, setTheme] = useState<LiteTheme>(loadTheme);
   const [fontSize, setFontSize] = useState(loadFontSize);
   const [apiProfiles, setApiProfiles] = useState<LiteApiProfile[]>(loadApiProfiles);
@@ -176,6 +174,10 @@ export function LiteApp() {
   const [syncedMemoryEditor, setSyncedMemoryEditor] = useState<LiteSyncedMemory | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [lastTokenUsage, setLastTokenUsage] = useState<LiteTokenUsage | null>(null);
+  const [replyStatus, setReplyStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [replyError, setReplyError] = useState('');
+  const [statusDetailsOpen, setStatusDetailsOpen] = useState(false);
+  const [cloudConnected, setCloudConnected] = useState(false);
   const messageStageRef = useRef<HTMLElement>(null);
   const stickerNameRef = useRef<HTMLInputElement>(null);
   const stickerUrlRef = useRef<HTMLInputElement>(null);
@@ -230,6 +232,18 @@ export function LiteApp() {
   useEffect(() => saveDeletedMessageIds(deletedMessageIds), [deletedMessageIds]);
   useEffect(() => saveStickerText(stickerText), [stickerText]);
   useEffect(() => {
+    const onOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (composerMenuOpen && !target.closest('.function-tray, .menu-button')) setComposerMenuOpen(false);
+      if (stickerPickerOpen && !target.closest('.sticker-tray, .sticker-button')) setStickerPickerOpen(false);
+      if (statusDetailsOpen && !target.closest('.status-control')) setStatusDetailsOpen(false);
+      if (document.activeElement instanceof HTMLTextAreaElement && document.activeElement.closest('.composer') && !target.closest('.composer')) document.activeElement.blur();
+    };
+    document.addEventListener('pointerdown', onOutsidePointer);
+    return () => document.removeEventListener('pointerdown', onOutsidePointer);
+  }, [composerMenuOpen, stickerPickerOpen, statusDetailsOpen]);
+  useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(null), notice.kind === 'error' ? 5000 : 3200);
     return () => window.clearTimeout(timeout);
@@ -248,6 +262,15 @@ export function LiteApp() {
     document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
     return () => { delete document.documentElement.dataset.liteTheme; };
   }, [theme]);
+  useEffect(() => {
+    const image = chatBackground ? `url(${JSON.stringify(chatBackground)})` : '';
+    document.documentElement.style.backgroundImage = image;
+    document.body.style.backgroundImage = image;
+    return () => {
+      document.documentElement.style.backgroundImage = '';
+      document.body.style.backgroundImage = '';
+    };
+  }, [chatBackground]);
   useEffect(() => {
     const viewport = window.visualViewport;
     const updateViewportHeight = () => {
@@ -277,14 +300,16 @@ export function LiteApp() {
   }, [shownMessages.length]);
 
   const refreshCloud = async (quiet = false) => {
-    if (!cloudReady) return null;
+    if (!cloudReady) { setCloudConnected(false); return null; }
     setCloudBusy(true);
     try {
       const next = await fetchSharedContext(cloudConfig);
       setCloudContext(next);
+      setCloudConnected(true);
       if (!quiet) setNotice({ kind: 'success', text: next ? '已读取最新共享上下文' : '连接成功，云端目前没有共享上下文' });
       return next;
     } catch (error: any) {
+      setCloudConnected(false);
       if (!quiet) setNotice({ kind: 'error', text: error?.message || '读取云端上下文失败' });
       return null;
     } finally {
@@ -293,6 +318,7 @@ export function LiteApp() {
   };
 
   useEffect(() => {
+    setCloudConnected(false);
     if (cloudReady) void refreshCloud(true);
     const onFocus = () => { if (cloudReady) void refreshCloud(true); };
     window.addEventListener('focus', onFocus);
@@ -305,8 +331,7 @@ export function LiteApp() {
     setApiProfiles((current) => current.map((profile) => profile.id === activeApiId ? { ...profile, ...patch } : profile));
   };
 
-  const openSettings = (section: SettingsSection, scope: SettingsScope) => {
-    setSettingsScope(scope);
+  const openSettings = (section: SettingsSection) => {
     setSettingsSection(section);
     setSettingsOpen(true);
     setComposerMenuOpen(false);
@@ -367,7 +392,7 @@ export function LiteApp() {
     if (!memorySummaryApiReady) {
       setSettingsNotice({
         kind: memorySummaryApiStarted ? 'error' : 'info',
-        text: memorySummaryApiStarted ? '请补全记忆总结 API 的地址、密钥和模型' : '记忆总结 API 未填写，目前会使用当前聊天 API',
+        text: memorySummaryApiStarted ? '请补全记忆总结 API 的地址、密钥和模型' : '记忆总结 API 未填写，使用当前聊天 API',
       });
       return;
     }
@@ -403,13 +428,18 @@ export function LiteApp() {
       return;
     }
     if (!activeApi?.baseUrl || !activeApi?.apiKey || !activeApi?.model) {
+      setReplyError('请先填写完整的 API 地址、密钥和模型');
+      setReplyStatus('error');
       setNotice({ kind: 'error', text: '请先完成聊天 API 设置' });
-      openSettings('api', 'quick');
+      openSettings('api');
       setSettingsNotice({ kind: 'error', text: '请先填写完整的 API 地址、密钥和模型' });
       return;
     }
     setNotice(null);
     setLastTokenUsage(null);
+    setReplyStatus('idle');
+    setReplyError('');
+    setStatusDetailsOpen(false);
     setSending(true);
     try {
       const latestCloud = cloudReady ? await refreshCloud(true) : cloudContext;
@@ -433,6 +463,7 @@ export function LiteApp() {
       }
       const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: localMessagesForRequest, memories, stickers });
       setLastTokenUsage(reply.usage);
+      setReplyStatus('success');
       const replyParts = splitLiteReplyParts(reply.text, stickers.map((sticker) => sticker.name));
       const baseTime = Date.now();
       const replyMessages = replyParts.map((part, index) => ({
@@ -456,7 +487,8 @@ export function LiteApp() {
         }
       }
     } catch (error: any) {
-      setNotice({ kind: 'error', text: error?.message || '生成回复失败' });
+      setReplyError(error?.message || '生成回复失败');
+      setReplyStatus('error');
     } finally {
       setSending(false);
     }
@@ -644,9 +676,11 @@ export function LiteApp() {
         previousRevision: latestCloud?.revision || 0,
       });
       setCloudContext(next);
+      setCloudConnected(true);
       setDeletedMessageIds([]);
       setSettingsNotice({ kind: 'success', text: `同步成功：已发布第 ${next.revision} 版共享上下文` });
     } catch (error: any) {
+      setCloudConnected(false);
       setSettingsNotice({ kind: 'error', text: error?.message || '同步失败' });
     } finally {
       setCloudBusy(false);
@@ -661,6 +695,7 @@ export function LiteApp() {
       setSettingsNotice({ kind: 'success', text });
       await refreshCloud(true);
     } catch (error: any) {
+      setCloudConnected(false);
       setSettingsNotice({ kind: 'error', text: error?.message || '连接失败' });
     } finally {
       setCloudBusy(false);
@@ -855,22 +890,22 @@ export function LiteApp() {
     >
       <header className="lite-header">
         <div className="lite-identity">
-          <div className="lite-avatar" aria-hidden="true">
+          <button className="lite-avatar" type="button" aria-label="打开角色设置" onClick={() => openSettings('role')}>
             {identity.characterAvatar ? <img src={identity.characterAvatar} alt="" /> : (identity.characterName || 'S').slice(0, 1)}
-          </div>
-          <h1>{identity.characterName || 'Sully'}</h1>
-          <div
-            className={`token-usage-pill${lastTokenUsage ? ' has-usage' : ''}`}
-            title={lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} tokens` : '完成一次回复后显示本次 Token 用量'}
-            aria-label={lastTokenUsage ? `本次调用使用 ${lastTokenUsage.totalTokens} tokens` : '暂无本次调用 Token 用量'}
-          >
-            {lastTokenUsage ? formatTokenCount(lastTokenUsage.totalTokens) : '0'}
-          </div>
-        </div>
-        <div className="header-actions">
-          <button className="icon-button" type="button" aria-label="打开角色与记忆设置" onClick={() => openSettings('role', 'main')}>
-            <GearSix size={22} weight="bold" />
           </button>
+          <h1>{identity.characterName || 'Sully'}</h1>
+        </div>
+        <div className="header-actions status-control">
+          <button className={`token-usage-pill${replyStatus === 'error' ? ' is-error' : ''}`} type="button" aria-expanded={statusDetailsOpen} aria-controls="lite-status-details" aria-label="查看 API 状态和云端连接详情" onClick={() => setStatusDetailsOpen((open) => !open)}>
+            <span className={`cloud-status-dot${cloudConnected ? ' connected' : ''}`} aria-hidden="true" />
+            {sending ? <span className="status-loading" aria-label="正在回复"><i /><i /><i /></span> : replyStatus === 'error' ? 'error' : replyStatus === 'success' ? `${lastTokenUsage ? formatTokenCount(lastTokenUsage.totalTokens) : '—'} token` : '— token'}
+          </button>
+          {statusDetailsOpen && <div className="status-details" id="lite-status-details" role="status">
+            <strong>{sending ? '正在生成回复' : replyStatus === 'error' ? 'API 请求失败' : replyStatus === 'success' ? '上次回复成功' : '等待首次回复'}</strong>
+            {replyStatus === 'error' && <p className="status-error-detail">{replyError}</p>}
+            {replyStatus === 'success' && <p>{lastTokenUsage ? `输入 ${lastTokenUsage.promptTokens} · 输出 ${lastTokenUsage.completionTokens} · 合计 ${lastTokenUsage.totalTokens} token` : 'API 未返回 token 用量'}</p>}
+            <p>云端记忆：{cloudConnected ? '已连接' : '未连接'}</p>
+          </div>}
         </div>
       </header>
 
@@ -883,7 +918,7 @@ export function LiteApp() {
           <div className="empty-icon"><Sparkle size={28} weight="fill" /></div>
           <h2>从这里继续</h2>
           <p>连接主脑后，这里会自动读取你手动同步的近期上下文，再和当前设备上的对话一起发送给角色。</p>
-          <button type="button" onClick={() => openSettings('api', 'quick')}>完成首次设置</button>
+          <button type="button" onClick={() => openSettings('api')}>完成首次设置</button>
         </div> : <div className="message-list">
           {cloudContext && visibleCloudMessages.length > 0 && (
             <div className="handoff-label"><Cloud size={14} /> 来自 {cloudContext.sourceDeviceName || '其他设备'} 的共享上下文</div>
@@ -923,17 +958,13 @@ export function LiteApp() {
         <span>{notice.text}</span>
       </div>}
 
-      {(composerMenuOpen || stickerPickerOpen) && <button
-        type="button"
-        className="composer-dismiss-layer"
-        aria-label="关闭弹出面板"
-        onClick={() => { setComposerMenuOpen(false); setStickerPickerOpen(false); }}
-      />}
-
       {composerMenuOpen && <section className="composer-tray function-tray" aria-label="快捷功能">
-        <button type="button" aria-label="重新回复本回合" title="重新回复本回合" disabled={sending || currentTurnReplyIds.length === 0} onClick={regenerateCurrentTurn}><ArrowClockwise size={21} /></button>
-        <button type="button" aria-label="打开 API 设置" title="API 设置" onClick={() => openSettings('api', 'quick')}><GearSix size={21} /></button>
-        <button type="button" aria-label="打开外观设置" title="外观设置" onClick={() => openSettings('appearance', 'quick')}><Palette size={21} /></button>
+        <button type="button" disabled={sending || currentTurnReplyIds.length === 0} onClick={regenerateCurrentTurn}><ArrowClockwise size={20} /><span>重新回复</span></button>
+        <button type="button" onClick={() => openSettings('profile')}><PencilSimple size={20} /><span>档案</span></button>
+        <button type="button" onClick={() => openSettings('api')}><GearSix size={20} /><span>API 设置</span></button>
+        <button type="button" onClick={() => openSettings('memory')}><Cloud size={20} /><span>向量记忆</span></button>
+        <button type="button" onClick={() => { openSettings('synced'); void refreshSyncedMemories(); }}><CloudArrowUp size={20} /><span>同步记忆</span></button>
+        <button type="button" onClick={() => openSettings('appearance')}><Palette size={20} /><span>外观</span></button>
       </section>}
 
       {stickerPickerOpen && <section className="composer-tray sticker-tray" aria-label="表情包">
@@ -984,24 +1015,15 @@ export function LiteApp() {
 
       {settingsOpen && (
         <div className="sheet-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
-          <section className={`settings-sheet settings-sheet-${settingsScope}`} role="dialog" aria-modal="true" aria-labelledby="lite-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section className="settings-sheet" role="dialog" aria-modal="true" aria-labelledby="lite-settings-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="sheet-handle" />
             <div className="sheet-title-row">
               <div>
                 <span className="eyebrow">LIGHT CLIENT</span>
-                <h2 id="lite-settings-title">{settingsScope === 'main' ? settingsSection === 'synced' ? '已同步的记忆' : '角色与记忆' : settingsSection === 'api' ? 'API 配置' : '外观'}</h2>
+                <h2 id="lite-settings-title">{({ api: 'API 配置', role: '角色设置', profile: '档案', memory: '向量记忆', synced: '已同步的记忆', appearance: '外观' } as Record<SettingsSection, string>)[settingsSection]}</h2>
               </div>
               <button type="button" className="text-button" onClick={() => setSettingsOpen(false)}>完成</button>
             </div>
-            {settingsScope === 'main' && <nav className="settings-tabs" aria-label="设置分区">
-              {([['role', '角色设置'], ['memory', '向量记忆'], ['synced', '已同步的记忆']] as const).map(([section, label]) => (
-                <button key={section} type="button" className={settingsSection === section ? 'active' : ''} onClick={() => {
-                  setSettingsSection(section);
-                  if (section === 'synced') void refreshSyncedMemories();
-                }}>{label}</button>
-              ))}
-            </nav>}
-
             <div key={settingsSection} className="settings-section-panel">
             {settingsSection === 'api' && <>
             <div className="setting-card">
@@ -1061,12 +1083,13 @@ export function LiteApp() {
                 <label>名字<input value={identity.characterName} onChange={(event) => setIdentity({ ...identity, characterName: event.target.value })} placeholder="角色名字" /></label>
                 <label>角色预设<textarea value={identity.systemPrompt} onChange={(event) => setIdentity({ ...identity, systemPrompt: event.target.value })} rows={7} placeholder="性格、说话方式、经历和边界" /></label>
               </div>
-              <div className="setting-card identity-panel">
-                <h3>用户</h3>
-                <label>名字<input value={identity.userName} onChange={(event) => setIdentity({ ...identity, userName: event.target.value })} placeholder="你的名字" /></label>
-                <label>用户预设<textarea value={identity.userPrompt} onChange={(event) => setIdentity({ ...identity, userPrompt: event.target.value })} rows={5} placeholder="希望角色知道的个人资料" /></label>
-              </div>
             </>}
+
+            {settingsSection === 'profile' && <div className="setting-card identity-panel">
+              <h3>用户设定</h3>
+              <label>名字<input value={identity.userName} onChange={(event) => setIdentity({ ...identity, userName: event.target.value })} placeholder="你的名字" /></label>
+              <label>用户预设<textarea value={identity.userPrompt} onChange={(event) => setIdentity({ ...identity, userPrompt: event.target.value })} rows={5} placeholder="希望角色知道的个人资料" /></label>
+            </div>}
 
             {settingsSection === 'memory' && <>
             <div className="setting-card">

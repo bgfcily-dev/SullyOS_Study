@@ -142,10 +142,10 @@ export async function requestLiteReply(input: {
     const raw = await response.text();
     let data: any;
     try { data = JSON.parse(raw); } catch {
-      throw new Error(`API 返回的不是 JSON：${raw.slice(0, 120) || '空响应'}`);
+      throw new Error(`API 返回的不是 JSON：${raw.slice(0, 1500) || '空响应'}`);
     }
     if (!response.ok) {
-      const detail = extractLiteText(data?.error?.message ?? data?.error) || raw.slice(0, 160);
+      const detail = extractLiteText(data?.error?.message ?? data?.error) || raw.slice(0, 1500);
       throw new Error(`API 请求失败（${response.status}）：${detail}`);
     }
     const message = data?.choices?.[0]?.message;
