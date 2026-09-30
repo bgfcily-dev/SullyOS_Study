@@ -132,6 +132,34 @@ const prepareBackgroundImage = (file: File): Promise<string> => new Promise((res
   image.src = objectUrl;
 });
 
+const sampleWallpaperEdgeColor = (source: string): Promise<string> => new Promise((resolve) => {
+  const image = new Image();
+  image.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 32;
+      canvas.height = 32;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('canvas');
+      context.drawImage(image, 0, 0, 32, 32);
+      const { data } = context.getImageData(0, 0, 32, 32);
+      const sum = [0, 0, 0];
+      let samples = 0;
+      for (let y = 0; y < 32; y += 1) {
+        if (y >= 4 && y < 28) continue;
+        for (let x = 0; x < 32; x += 1) {
+          const offset = (y * 32 + x) * 4;
+          for (let channel = 0; channel < 3; channel += 1) sum[channel] += data[offset + channel];
+          samples += 1;
+        }
+      }
+      resolve(`#${sum.map((value) => Math.round(value / samples).toString(16).padStart(2, '0')).join('')}`);
+    } catch { resolve('#202020'); }
+  };
+  image.onerror = () => resolve('#202020');
+  image.src = source;
+});
+
 export function LiteApp() {
   const [draft, setDraft] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -256,38 +284,52 @@ export function LiteApp() {
   useEffect(() => {
     saveTheme(theme);
     document.documentElement.dataset.liteTheme = theme;
-    const color = theme === 'dark' ? '#202020' : '#ffffff';
-    document.documentElement.style.backgroundColor = color;
-    document.body.style.backgroundColor = color;
-    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
-    return () => { delete document.documentElement.dataset.liteTheme; };
-  }, [theme]);
+    let cancelled = false;
+    const applyColor = (color: string) => {
+      if (cancelled) return;
+      document.documentElement.style.backgroundColor = color;
+      document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', color);
+    };
+    applyColor(chatBackground ? '#202020' : theme === 'dark' ? '#202020' : '#ffffff');
+    if (chatBackground) void sampleWallpaperEdgeColor(chatBackground).then((color) => {
+      applyColor(color);
+      if (!cancelled) {
+        try { localStorage.setItem('sully_lite_chat_background_edge_v1', color); } catch { /* optional boot color */ }
+      }
+    });
+    else {
+      try { localStorage.removeItem('sully_lite_chat_background_edge_v1'); } catch { /* optional boot color */ }
+    }
+    return () => { cancelled = true; delete document.documentElement.dataset.liteTheme; };
+  }, [theme, chatBackground]);
   useEffect(() => {
-    const image = chatBackground ? `url(${JSON.stringify(chatBackground)})` : '';
+    const image = chatBackground ? `linear-gradient(rgba(20, 20, 20, .08), rgba(20, 20, 20, .08)), url(${JSON.stringify(chatBackground)})` : '';
+    document.documentElement.dataset.liteWallpaper = chatBackground ? 'true' : 'false';
     document.documentElement.style.backgroundImage = image;
-    document.body.style.backgroundImage = image;
     return () => {
+      delete document.documentElement.dataset.liteWallpaper;
       document.documentElement.style.backgroundImage = '';
-      document.body.style.backgroundImage = '';
     };
   }, [chatBackground]);
   useEffect(() => {
     const viewport = window.visualViewport;
     const updateViewportHeight = () => {
-      const height = Math.round(viewport?.height || window.innerHeight);
-      document.documentElement.style.setProperty('--lite-viewport-height', `${height}px`);
-      document.documentElement.style.setProperty('--lite-viewport-offset-top', `${Math.round(viewport?.offsetTop || 0)}px`);
+      const chatInputFocused = document.activeElement instanceof HTMLTextAreaElement && document.activeElement.closest('.composer');
+      const keyboardVisible = chatInputFocused && viewport && viewport.height < window.innerHeight * .75;
+      if (keyboardVisible && viewport) document.documentElement.style.setProperty('--lite-viewport-height', `${Math.round(viewport.height)}px`);
+      else document.documentElement.style.removeProperty('--lite-viewport-height');
     };
     updateViewportHeight();
     window.addEventListener('resize', updateViewportHeight);
     viewport?.addEventListener('resize', updateViewportHeight);
-    viewport?.addEventListener('scroll', updateViewportHeight);
+    document.addEventListener('focusin', updateViewportHeight);
+    document.addEventListener('focusout', updateViewportHeight);
     return () => {
       window.removeEventListener('resize', updateViewportHeight);
       viewport?.removeEventListener('resize', updateViewportHeight);
-      viewport?.removeEventListener('scroll', updateViewportHeight);
+      document.removeEventListener('focusin', updateViewportHeight);
+      document.removeEventListener('focusout', updateViewportHeight);
       document.documentElement.style.removeProperty('--lite-viewport-height');
-      document.documentElement.style.removeProperty('--lite-viewport-offset-top');
     };
   }, []);
   useEffect(() => {
@@ -882,10 +924,9 @@ export function LiteApp() {
 
   return (
     <main
-      className={`lite-shell theme-${theme}${chatBackground ? ' has-chat-background' : ''}`}
+      className={`lite-shell theme-${theme}${chatBackground ? ' has-chat-background' : ''}${settingsOpen || modelPickerOpen || stickerEditor || messageEditor || syncedMemoryEditor || memoryPreview ? ' has-input-overlay' : ''}`}
       style={{
         '--lite-message-font-size': `${fontSize}px`,
-        ...(chatBackground ? { backgroundImage: `linear-gradient(rgba(20, 20, 20, .08), rgba(20, 20, 20, .08)), url(${chatBackground})` } : {}),
       } as React.CSSProperties}
     >
       <header className="lite-header">
