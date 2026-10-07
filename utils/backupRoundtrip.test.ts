@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import JSZip from 'jszip';
 import { DB, openDB } from './db';
-import { putImageBlob, dataUrlToBlob, getBlobForRef } from './blobRef';
+import { putImageBlob, dataUrlToBlob, getBlobForRef, deleteBlobRef, restoreBlobRef } from './blobRef';
 import { collectBlobRefs, writeBlobsToZip, readBlobsIndex, restoreBlobsFromZip, BLOBS_INDEX_FILE } from './backupBlobs';
 import { encodeVectorsForBackup, encodeVectorsForBackupChunked, MemoryVectorDB } from './memoryPalace/db';
 import { writeV2Backup, assembleV2Backup, shardFileName, type ShardLimits } from './backupFormat';
@@ -70,6 +70,34 @@ function vecValues(v: any): number[] {
 }
 
 describe('v2 真实链路：分片 → 组装 → importFullData', () => {
+    it('聊天备注开关与相机成片在清库后完整恢复，不依赖原设备图片', async () => {
+        const photo = new Blob([new Uint8Array([255, 216, 255, 217])], { type: 'image/jpeg' });
+        const token = await putImageBlob(photo);
+        await seedStore('characters', [
+            { id: 'camera-on', name: '实际名称', description: '用户备注', chatShowRemark: true },
+            { id: 'camera-off', name: '关闭备注', chatShowRemark: false },
+        ]);
+        await seedStore('messages', [{ id: 901, charId: 'camera-on', role: 'user', type: 'image', content: token }]);
+        await seedStore('gallery', [{ id: 'camera-photo', url: token }]);
+        const exported = await DB.exportFullData();
+        const zip = new FakeZip(), tokens = new Set<string>();
+        const manifest = await writeV2Backup(zip, exported as any, { onSerialized: s => collectBlobRefs(s, tokens) });
+        expect(tokens.has(token)).toBe(true);
+        expect((await writeBlobsToZip(zip, tokens, getBlobForRef)).missing).toEqual([]);
+        for (const store of ['characters', 'messages', 'gallery']) await seedStore(store, []);
+        await deleteBlobRef(token);
+        expect(await getBlobForRef(token)).toBeNull();
+        await restoreBlobsFromZip(zip, await readBlobsIndex(zip), restoreBlobRef);
+        await DB.importFullData(await assembleV2Backup(zip, manifest) as any);
+        const chars = await DB.getRawStoreData('characters');
+        expect(chars.find((c: any) => c.id === 'camera-on')).toMatchObject({ name: '实际名称', description: '用户备注', chatShowRemark: true });
+        expect(chars.find((c: any) => c.id === 'camera-off').chatShowRemark).toBe(false);
+        expect((await DB.getRawStoreData('messages'))[0].content).toBe(token);
+        expect((await DB.getRawStoreData('gallery'))[0].url).toBe(token);
+        const restored = await getBlobForRef(token);
+        expect(restored?.type).toBe('image/jpeg');
+        expect(new Uint8Array(await restored!.arrayBuffer())).toEqual(new Uint8Array(await photo.arrayBuffer()));
+    });
     it('跨分片 clear-and-add：所有片的数据都落库、不只剩最后一片（Finding 1）', async () => {
         await seedStore('gallery', [{ id: 'old', url: 'old' }]);
         const items = Array.from({ length: 5 }, (_, i) => ({ id: `g${i}`, url: `u${i}` }));
@@ -117,7 +145,8 @@ describe('v2 真实链路：分片 → 组装 → importFullData', () => {
             instantChatEnabled: true,
         });
 
-        const exported = await DB.exportFullData();
+        // 勾了「包含后端连接」才带走（默认不带，见下面那条守卫）
+        const exported = await DB.exportFullData({ includeBackendConnection: true });
         expect(exported.amsg2GlobalConfig?.workerUrl).toBe('https://amsg.example.workers.dev');
 
         const zip = new FakeZip();
@@ -131,7 +160,7 @@ describe('v2 真实链路：分片 → 组装 → importFullData', () => {
         });
         expect((await ActiveMsgStore.getGlobalConfig()).workerUrl).toBe('');
 
-        await DB.importFullData(data);
+        await DB.importFullData(data, { allowBackendConnection: true });
 
         const restored = await ActiveMsgStore.getGlobalConfig();
         expect(restored.workerUrl).toBe('https://amsg.example.workers.dev');
@@ -148,14 +177,63 @@ describe('v2 真实链路：分片 → 组装 → importFullData', () => {
             workerUrl: 'https://amsg.example.workers.dev',
             instantChatSupported: false, // 备份那会儿那台 Worker 还是旧版
         });
-        const exported = await DB.exportFullData();
+        const exported = await DB.exportFullData({ includeBackendConnection: true });
 
         // 这台机器上的 Worker 早就更新过了
         await ActiveMsgStore.saveGlobalConfig({ workerUrl: '', instantChatSupported: true });
-        await DB.importFullData({ ...exported } as any);
+        await DB.importFullData({ ...exported } as any, { allowBackendConnection: true });
 
         // 照抄回 false 会把即时对话白挡在门外，直到用户手动去重开开关
         expect((await ActiveMsgStore.getGlobalConfig()).instantChatSupported).toBeUndefined();
+    });
+
+    // 备份是会被分享出去的：带上后端连接就等于把自己那台 Worker 的钥匙一起发了——
+    // 对方的 App 会静默连上来，把 ta 的 API 凭据和聊天上下文写进你的 D1，而 ta 手里的
+    // 主密钥能解开你那台机器上所有的密文。所以默认不带，要带得用户自己勾。
+    it('默认导出不带后端连接：地址 / 密钥 / 用户 id 一样都不在备份里', async () => {
+        await ActiveMsgStore.saveGlobalConfig({
+            userId: 'u-secret',
+            workerUrl: 'https://amsg.example.workers.dev',
+            serverToken: 'token-abc',
+            masterKey: 'master-key-xyz',
+            instantChatEnabled: true,
+        });
+
+        const exported = await DB.exportFullData();
+        const config: any = exported.amsg2GlobalConfig;
+
+        expect(config?.workerUrl).toBeUndefined();
+        expect(config?.serverToken).toBeUndefined();
+        expect(config?.masterKey).toBeUndefined();
+        expect(config?.userId).toBeUndefined();
+        // 开关这类无害的偏好照旧跟着走
+        expect(config?.instantChatEnabled).toBe(true);
+    });
+
+    // 老备份里带着这几样，而导入的人未必知道这份文件是谁的。不点头就只还原开关。
+    it('导入不点头就不连后端：本机原有的连接也不会被顶掉', async () => {
+        await ActiveMsgStore.saveGlobalConfig({
+            userId: 'u-mine',
+            workerUrl: 'https://mine.example.workers.dev',
+            masterKey: 'my-key',
+        });
+
+        await DB.importFullData({
+            amsg2GlobalConfig: {
+                userId: 'u-theirs',
+                workerUrl: 'https://theirs.example.workers.dev',
+                serverToken: 'their-token',
+                masterKey: 'their-key',
+                instantChatEnabled: false,
+            },
+        } as any);
+
+        const after = await ActiveMsgStore.getGlobalConfig();
+        expect(after.workerUrl).toBe('https://mine.example.workers.dev');
+        expect(after.masterKey).toBe('my-key');
+        expect(after.userId).toBe('u-mine');
+        // 非连接类的偏好照常还原
+        expect(after.instantChatEnabled).toBe(false);
     });
 
     it('没配过 Worker 的用户：备份里干脆不出现这一项', async () => {

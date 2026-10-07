@@ -27,6 +27,7 @@ import { getDailyScheduleForChar } from '../utils/dailySchedule';
 import { trackEvent } from '../utils/analytics';
 import { normalizeBuiltInRoomTemplateAssetsInPlace, toPortableBuiltinRoomAsset } from '../utils/roomTemplateAssets';
 import { shareOrDownloadFile } from '../utils/shareExport';
+import { readShareText } from '../utils/pngShare';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -629,15 +630,16 @@ const RoomApp: React.FC = () => {
     const initializeFallback = async (c: CharacterProfile) => {
         try {
             console.warn("Triggering Room Fallback Initialization");
-            const baseContext = ContextBuilder.buildCoreContext(c, userProfile, false);
-            const fallbackPrompt = `${baseContext}\n\nTask: User entered your room. Just say hello. JSON: { "welcomeMessage": "..." }`;
+            const characterContextInput = { char: c, user: userProfile, includeDetailedMemories: false };
+
+            const fallbackPrompt = `\n\nTask: User entered your room. Just say hello. JSON: { "welcomeMessage": "..." }`;
             
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({ 
                     model: apiConfig.model, 
-                    messages: [{ role: "user", content: fallbackPrompt }], 
+                    messages: ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: "user", content: fallbackPrompt }]),
                     temperature: 0.5,
                     max_tokens: 8000 // Keep it tiny
                 })
@@ -736,7 +738,8 @@ const RoomApp: React.FC = () => {
             const timeGapHint = getTimeGapHint(lastMsg?.timestamp);
 
             await injectMemoryPalace(c, recentMsgs);
-            const baseContext = ContextBuilder.buildCoreContext(c, userProfile, true); // Keep Full Context
+            const characterContextInput = { char: c, user: userProfile, includeDetailedMemories: true };
+
 
             // DEBUG FIX: Sanitize and truncate interactables context to prevent huge Base64 leakage
             const interactables = currentItems.filter(i => i.isInteractive).map(i => ({
@@ -745,7 +748,7 @@ const RoomApp: React.FC = () => {
                 context: (i.descriptionPrompt || '').substring(0, 200)
             }));
 
-            let prompt = `${baseContext}
+            let prompt = `
 
 ### [Environment Context - Critical]
 **当前现实时间**: ${nowDateStr} ${nowTimeStr}${tzSuffix}
@@ -800,7 +803,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({ 
                     model: apiConfig.model,
-                    messages: [{ role: "user", content: prompt }],
+                    messages: ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: "user", content: prompt }]),
                     temperature: 0.5, // Lower temp for stability
                     max_tokens: 8000,
                     // Safety Settings injection for Gemini-based proxies
@@ -1277,11 +1280,13 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                 addToast('小屋 JSON 已复制到剪贴板', 'success');
             } else {
                 const result = await shareOrDownloadFile({
+                    card: { kind: 'room', title: template.name },
                     content: json,
                     fileName: `${template.name.replace(/[\\/:*?"<>|]/g, '_')}.room.json`,
                     mimeType: 'application/json;charset=utf-8',
                     shareTitle: `小屋样板房：${template.name}`,
                 });
+                if (result === 'cancelled') return;
                 addToast(result === 'shared' ? '已打开小屋样板房分享面板' : '小屋样板房已导出', 'success');
             }
             trackEvent('导出小屋样板房', { action });
@@ -1332,7 +1337,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
         e.target.value = '';
         if (!file) return;
         try {
-            const data = JSON.parse(await file.text());
+            const data = JSON.parse(await readShareText(file, 'room'));
             if (!data || !Array.isArray(data.items)) throw new Error('缺少 items，不是有效的小屋样板房文件');
             setPendingImport(data);
         } catch (err: any) {
@@ -2239,7 +2244,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
 
             {/* 批量导入素材 / 导入小屋样板房 的隐藏文件选择器（放顶层：工具栏和家具超市弹窗都会用到） */}
             <input type="file" ref={batchAssetInputRef} className="hidden" accept="image/*" multiple onChange={handleBatchAssetImport} />
-            <input type="file" ref={importRoomInputRef} className="hidden" accept=".json,application/json" onChange={handleImportRoomFile} />
+            <input type="file" ref={importRoomInputRef} className="hidden" accept=".json,.png,application/json,image/png" onChange={handleImportRoomFile} />
 
             {/* Asset Library Modal（点选不再自动关闭，可连点批量摆放） */}
             <Modal isOpen={showLibrary} title="家具超市" onClose={() => setShowLibrary(false)}

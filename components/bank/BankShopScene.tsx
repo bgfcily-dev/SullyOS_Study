@@ -106,7 +106,8 @@ const BankShopScene: React.FC<Props> = ({
         try {
             const char = characters[Math.floor(Math.random() * characters.length)];
             await injectMemoryPalace(char);
-            const context = ContextBuilder.buildCoreContext(char, userProfile, true);
+            const characterContextInput = { char, user: userProfile, includeDetailedMemories: true };
+
 
             // Load recent chat history for richer context
             const recentMsgs = await loadCharacterContextMessages(char);
@@ -119,7 +120,7 @@ const BankShopScene: React.FC<Props> = ({
             const pet = getVisitorPet(char.id);
             const hasPetHere = !!pet;
 
-            let prompt = `${context}
+            let prompt = `
 
 ### Recent Chat History (for context only)
 ${chatSnippet || '(No recent chats)'}
@@ -161,7 +162,7 @@ Language: Chinese.`;
             const res = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({ model: apiConfig.model, messages: [{ role: 'user', content: prompt }] })
+                body: JSON.stringify({ model: apiConfig.model, messages: ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }]) })
             });
 
             if (res.ok) {

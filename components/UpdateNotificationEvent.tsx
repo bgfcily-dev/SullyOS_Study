@@ -1,3 +1,10 @@
+import DecorationUpdatePopup from './chat/DecorationUpdatePopup';
+import UserHolidayIntro from './settings/UserHolidayIntro';
+import SmallUpdatesPopup, { SMALL_UPDATES_KEY } from './os/SmallUpdatesPopup';
+import { HOLIDAY_NOTICE_KEY, hasChosenHolidayIntro } from '../utils/userHolidays';
+import {DECORATION_UPDATE_KEY} from '../utils/decorationGuide';
+import { SARUpdatePopup } from './os/SARUpdatePopup';
+import { SAR_UPDATE_KEY, SAR_CHANGELOG, sarLaunch } from '../utils/sarUpdate';
 /**
  * 全局版本更新提醒。
  *
@@ -51,6 +58,7 @@ export const CHANGELOG_2026_08_30 = 'changelog-2026-08-30';
 
 /** storage 读不出来时当成看过：宁可少弹一次，也别每次开机都糊用户一脸。 */
 const isUpdateSeen = (key: string): boolean => {
+    if (key === HOLIDAY_NOTICE_KEY) return hasChosenHolidayIntro();
     try {
         return !!localStorage.getItem(key);
     } catch {
@@ -531,7 +539,7 @@ const NetworkTransitNoticePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit 
                     </p>
                     <div className="rounded-2xl bg-sky-50 px-3.5 py-3 text-[11px] leading-[1.7] text-sky-900 ring-1 ring-sky-100">
                         <p>
-                            这和你平时使用<b>联网搜索、第三方登录或在线音乐</b>时的接口请求相近：只有主动使用对应功能时，当次必要数据才会经过服务端，不会把 SullyOS 的聊天记录或本地资料整体上传。
+                            这和你平时使用<b>联网搜索、第三方登录或在线音乐</b>时的接口请求相近：只有主动使用对应功能时，当次必要数据才会经过服务端，不会把 SullyOS·糯米机 的聊天记录或本地资料整体上传。
                         </p>
                         <p className="mt-1.5">
                             如果你平时能够接受 API 中转站，可以把它作为参照：API 中转站能够接触完整的模型请求与聊天内容；这里的 Worker 只接触对应功能的当次请求，并在转发后不保留请求内容。
@@ -569,11 +577,23 @@ const NetworkTransitNoticePopup: React.FC<UpdatePopupProps> = ({ onDone, onExit 
  * 同时上线好几个功能时，各自值得单独说一次，所以排成队列：关掉一条接着弹下一条，
  * 已读各记各的 key——点掉其中一条不影响另一条还会不会露面。
  */
+const SARUpdateAnnouncement: React.FC<UpdatePopupProps> = ({ onDone, onExit }) => {
+    const { openApp } = useOS();
+    return <SARUpdatePopup onDone={onDone} onVisit={() => {
+        sarLaunch.request(); openApp(AppID.VRWorld); onExit();
+    }} onGuide={() => {
+        try { sessionStorage.setItem(FAQ_TARGET_SECTION_KEY, SAR_CHANGELOG); } catch { /* 手册首页仍可打开 */ }
+        openApp(AppID.FAQ); onExit();
+    }}/>;
+};
+
 const UPDATE_QUEUE: { key: string; render: (props: UpdatePopupProps) => React.ReactNode }[] = [
-    { key: UPDATE_NOTIFICATION_KEY_2026_08_30, render: (props) => <CollaborationUpdatePopup {...props} /> },
+    { key: SMALL_UPDATES_KEY, render: props => <SmallUpdatesPopup onDone={props.onDone} /> },
+    { key: HOLIDAY_NOTICE_KEY, render: props => <UserHolidayIntro {...props} /> },
+    { key: DECORATION_UPDATE_KEY, render: props => <DecorationUpdatePopup onClose={props.onExit}/> },
+    { key: SAR_UPDATE_KEY, render: (props) => <SARUpdateAnnouncement {...props} /> },
     { key: NETWORK_TRANSIT_NOTICE_KEY_2026_08, render: (props) => <NetworkTransitNoticePopup {...props} /> },
     { key: UPDATE_NOTIFICATION_KEY_2026_08_10, render: (props) => <Live2DUpdatePopup {...props} /> },
-    { key: UPDATE_NOTIFICATION_KEY_2026_08_03, render: (props) => <Amsg2UpdatePopup {...props} /> },
 ];
 
 export const shouldShowUpdateNotification = (): boolean => UPDATE_QUEUE.some((entry) => !isUpdateSeen(entry.key));

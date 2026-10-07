@@ -70,12 +70,11 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 - **暴露名 ≠ 真实工具名**。OpenAI 工具名只许 `[A-Za-z0-9_-]{1,64}`，MCP 工具
   名可能带点号；跨服务器还会重名。`buildMcpOpenAITools()` 返回
   `resolve: Map<暴露名, {server, toolName}>`，执行时必须经它换回真实名。
-- **MCP 模式强制本地 fetch**（跳过 Instant Push）且**本轮禁 thinking**
+- **本地聊天路径的 MCP 模式本轮禁 thinking**
   （`toolModeActive`，Gemini 系 "thinking + tools" 同发会 400）——与
   瑞幸/麦当劳既有约束一致，设置卡片里已向用户说明。
-- **即时对话路径下 MCP 由 amsg worker 云端执行**：主动消息 2.0 的即时对话（与上面的
-  Instant Push 是两条互斥的云端路，见 `plans/amsg2-instant-chat-contract.md`）刻意不把
-  MCP 排除在外——worker fire 时自己解析 `tool_config`、直连用户配置的 MCP 服务器，
+- **即时对话路径下 MCP 由 amsg worker 云端执行**：主动消息 2.0 的即时对话（见
+  `plans/amsg2-instant-chat-contract.md`）刻意不把 MCP 排除在外——worker fire 时自己解析 `tool_config`、直连用户配置的 MCP 服务器，
   工具说明块与凭据都由 worker 侧统一供给（客户端这次 POST 顺手把 `tool_config` 传上去）。
 - **session 失效自动重连一次**：`tools/call` 遇 HTTP 400/404 会重握手重试
   （服务器重启后 `Mcp-Session-Id` 作废是常态）。
@@ -139,3 +138,9 @@ function calling（例如携带 `tools` 就报 401），关闭它后首轮会直
 
 回归守卫：`scripts/amsg2-e2e-harness.mjs` S8/S8b（mock MCP 服务器端到端）+
 `worker/amsg/src/agentic.test.ts`、`index.test.ts`、`utils/mcpFireCore.test.ts`。
+
+### 聊天中停止工具调用
+
+聊天生成入口在执行工具时也可以停止。前台和主动消息 2.0 的 instant 路径都把本轮 `AbortSignal` 传入 MCP 的握手与 `tools/call` 请求；停止后取消网络等待，不再把取消当作工具失败送回模型继续生成。后台执行链通过任务租约心跳收到取消，本应用的检测间隔为 1 秒。
+
+停止不能撤回工具服务端已经完成的操作；远端服务是否能停止自身执行取决于其实现。本应用会中断连接并阻止这一轮的后续调用。已经显示的聊天内容保留，尚未显示的结果不再写入聊天。

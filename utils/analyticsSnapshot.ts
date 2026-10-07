@@ -1,3 +1,7 @@
+import { loadChatInputPreferences } from './chatInputPreferences';
+import { readSARClubState, sarRoomView } from './vrWorld/sarClub';
+import { ANNIVERSARY_SEEN_KEY } from './anniversaryGifts';
+import { readFishingMarketState } from './vrWorld/fishingMarket';
 /**
  * 使用统计 · 会话级快照的收集层。
  *
@@ -36,8 +40,6 @@ import { isStandaloneDisplayMode } from './iosStandalone';
 import { loadMcpServers, getMcpUseNativeTools } from './mcpClient';
 import { getLuckinToken, isLuckinEnabled } from './luckinMcpClient';
 import { getMcdToken, isMcdEnabled } from './mcdMcpClient';
-import { loadInstantConfig } from './instantPushClient';
-import { isPushVapidReady } from './pushVapid';
 import { getPendingTasks, isAmsg2EnabledForChar } from './amsg2Tasks';
 import { ActiveMsgStore } from './activeMsgStore';
 import { getVRApi } from './vrWorld/vrApi';
@@ -126,7 +128,6 @@ export function collectAppearance(
         表情尺寸: theme.chatEmojiSize ?? 'small',
         隐藏侧贴边: onOff(theme.chatSnapToEdge),
         // ── 开关 ──
-        准备中圆点: onOff(theme.chatPendingIndicator, true),
         隐藏情绪栏: onOff(theme.chatHideHeaderBuffs),
         // 白框自定义 CSS 是用户写的代码，只报用没用
         自定义白框CSS: theme.chatChromeCustomCss ? '用了' : '没用',
@@ -196,6 +197,7 @@ export function collectCharSettings(
     return {
         // ── 开关：默认关的，问有没有人开过 ──
         记忆宫殿: anyOn(x => x.memoryPalaceEnabled),
+        聊天显示备注: anyOn(x => x.chatShowRemark === true),
         自动归档: anyOn(x => x.autoArchiveEnabled),
         思考过程: anyOn(x => x.showThinkingChain),
         日程与情绪: anyOn(x => x.scheduleFeatureEnabled),
@@ -377,6 +379,43 @@ function hasLocalJsonConfig(key: string): boolean {
     }
 }
 
+/** 存档内已完成 + 当前未完成的剧情去重；回顾不会增加数量，不收剧情 ID。 */
+function collectSARDialogueCounts(): Record<string, string> {
+    try {
+        const npcs = readFishingMarketState().sarFamiliarity?.npcs;
+        const count = (npc: 'caian' | 'aiven'): string => {
+            const progress = npcs?.[npc];
+            const ids = new Set(Object.keys(progress?.completed || {}));
+            if (progress?.pending?.sceneId) ids.add(progress.pending.sceneId);
+            const n = ids.size;
+            return n === 0 ? '0' : n <= 5 ? '1–5' : n <= 10 ? '6–10' : n <= 20 ? '11–20'
+                : n <= 30 ? '21–30' : n <= 40 ? '31–40' : '41+';
+        };
+        return { 凯恩已触发对话数: count('caian'), 艾文已触发对话数: count('aiven') };
+    } catch {
+        // 坏档或存储不可读不应变成「没玩过」，也不能阻断其他快照。
+        return { 凯恩已触发对话数: '读取失败', 艾文已触发对话数: '读取失败' };
+    }
+}
+
+/** SAR 发布功能单独参与冷启动轮转，不加宽原有功能快照。 */
+export function collectSARFeatureFlags(): Record<string, string> {
+    const input = loadChatInputPreferences();
+    const sar = readSARClubState();
+    return {
+        // ── SAR / 输入习惯 / 周年赠礼：只上报固定状态 ──
+        发送键生成: onOff(input.sendButtonGenerates),
+        回车发送: onOff(input.enterToSend),
+        自动回复: onOff(input.autoReply),
+        SAR角色: sar.npcPreference === 'show' ? '开' : sar.npcPreference === 'hide' ? '关' : '未选择',
+        SAR房间显示: sarRoomView(sar) === 'names-hidden' ? '隐藏名字' : sarRoomView(sar) === 'text-hidden' ? '隐藏文字' : sarRoomView(sar) === 'characters-hidden' ? '隐藏角色' : '全部显示',
+        SAR简易钓鱼: isLocalFlagOn('vr_fishing_simple_mode', 'true') ? '开' : '关',
+        SAR对话配色: isLocalFlagOn('vr_sar_session_theme_v1', 'dark') ? '深色' : '浅色',
+        周年赠礼已阅: isLocalFlagOn(ANNIVERSARY_SEEN_KEY, '1') ? '是' : '否',
+        ...collectSARDialogueCounts(),
+    };
+}
+
 /** OSContext 手上有、这里读不到的那部分状态。 */
 export interface FeatureSources {
     realtimeConfig: RealtimeConfig;
@@ -404,12 +443,11 @@ export interface FeatureSources {
  * 把「现在开着哪些功能」收敛成一份可上报的枚举表。
  *
  * 纯函数 + 直接读 localStorage 两种来源都有：能同步读到的（MCP、点单、QQ 桥、
- * 自习室、推送）在这里自己读，OSContext 只需要传它 state 里那几份。
+ * 自习室）在这里自己读，OSContext 只需要传它 state 里那几份。
  */
 export function collectFeatureFlags(src: FeatureSources): Record<string, string> {
     const rt = src.realtimeConfig;
     const mcpServers = loadMcpServers();
-    const instant = loadInstantConfig();
     const luckinToken = getLuckinToken().length > 0;
     const mcdToken = getMcdToken().length > 0;
     // 「用起来了的角色」= 在面板里把开关打开过的（enabled:true 是用户表过态的真痕迹），
@@ -426,6 +464,7 @@ export function collectFeatureFlags(src: FeatureSources): Record<string, string>
         // ── 外部服务接入 ──
         // 天气和热点走免鉴权的公共源，没有「配了」这一态，只有开没开。
         天气: rt.weatherEnabled ? '开' : '关',
+        节假日感知: rt.userHolidays?.enabled && rt.userHolidays.countryCode ? '开' : '关',
         // 自备 key 的人走 OpenWeatherMap，留空走 Open-Meteo。只报有没有，不报 key。
         天气自备key: rt.weatherApiKey?.trim() ? '有' : '无',
         热点: rt.newsEnabled ? '开' : '关',
@@ -489,19 +528,11 @@ export function collectFeatureFlags(src: FeatureSources): Record<string, string>
         自习室独立线路: hasLocalJsonConfig('study_api_config') ? '配了' : '没配',
         彼方独立线路: src.vrIndependentApi ? '配了' : '没配',
 
-        // ── 推送 ──
-        // Instant Push「配了」= 填了 worker 地址，「开」还要 VAPID 也齐（跟
-        // isInstantConfigReady 同口径），否则会把「填了地址但没生成密钥」误报成开着。
-        //
+        // ── 主动消息 2.0 ──
         // 没报「主动消息 Push 加速」：那一层已经全局下线（proactivePushConfig.ts 的
         // FORCE_DISABLED，设置面板也藏了），loadPushConfig() 恒返回 enabled=false。
         // 报出来只会是一片「关」，看着像没人用，其实是被下掉了——这种数据比没有更坏。
-        InstantPush: triState(
-            Boolean(instant.workerUrl?.startsWith('https://')),
-            Boolean(instant.enabled && instant.workerUrl?.startsWith('https://') && isPushVapidReady()),
-        ),
-
-        // ── 主动消息 2.0 ──
+        //
         // 四态（见 amsg2Stage）：三关里卡在哪一关，要修的引导完全不是一回事。
         '主动消息2.0': amsg2Stage(
             Boolean(src.amsg2Global.workerUrl?.trim()),

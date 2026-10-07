@@ -268,14 +268,8 @@ export async function generateDailyScheduleForChar(
     }
 
     // 含详细记忆，并让关键词世界书使用与私聊相同的消息窗口激活。
-    const baseContext = ContextBuilder.buildCoreContext(
-        char,
-        userProfile,
-        true,
-        undefined,
-        undefined,
-        { worldbookMessages: historyMessages },
-    );
+    const characterContextInput = { char, user: userProfile, includeDetailedMemories: true, timeOptions: { worldbookMessages: historyMessages } };
+
 
     const chatHistoryBlock = formatChatHistoryForSchedule(historyMessages, char, userProfile, emojis);
 
@@ -283,8 +277,8 @@ export async function generateDailyScheduleForChar(
 
     const style = char.scheduleStyle || 'lifestyle';
     const prompt = style === 'mindful'
-        ? buildMindfulPrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock)
-        : buildLifestylePrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock);
+        ? buildMindfulPrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock)
+        : buildLifestylePrompt('', char, userProfile, today, dayOfWeek, chatHistoryBlock);
 
     try {
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -292,7 +286,7 @@ export async function generateDailyScheduleForChar(
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
             body: JSON.stringify({
                 model: apiConfig.model,
-                messages: [{ role: 'user', content: prompt }],
+                messages: ContextBuilder.buildCharacterRequest(characterContextInput, [{ role: 'user', content: prompt }]),
                 temperature: 0.85,
                 max_tokens: 8000
             }),

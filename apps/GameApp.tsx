@@ -290,13 +290,17 @@ const GameApp: React.FC = () => {
     };
 
     // --- Helper: Robust API Call ---
-    const fetchGameAPI = async (prompt: string, maxTokens: number = 8000) => {
+    const fetchGameAPI = async (prompt: string, maxTokens: number = 8000, members: CharacterProfile[] = []) => {
+        const history = [{ role: 'user', content: '请按上述要求继续本轮游戏。' }];
+        const messages = members.length ? ContextBuilder.buildGroupWorldbookRequest({ members, user: userProfile, history, scanMessages: [{ role: 'user', content: prompt }],
+            render: (slots, turns) => [{ role: 'system', content: slots.before + prompt + slots.after }, ...turns],
+        }) : [{ role: 'user', content: prompt }];
         const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
             body: JSON.stringify({
                 model: apiConfig.model,
-                messages: [{ role: "user", content: prompt }],
+                messages,
                 temperature: 0.9, 
                 max_tokens: maxTokens,
                 stream: false
@@ -342,7 +346,7 @@ const GameApp: React.FC = () => {
 
         // [优化] 多人同场时，把"用户档案 / 共有世界观 / 被多名角色挂载的世界书"提取到顶部
         // 只铺一次，避免每个角色块里重复贴同一份世界书（去重，省 token 也防串台）。
-        const sharedScene = ContextBuilder.buildGroupSharedScene(players, userProfile);
+        const sharedScene = ContextBuilder.buildGroupSharedScene(players.map(p => ({ ...p, mountedWorldbooks: [] })), userProfile);
         if (sharedScene.text) {
             fullContext += `${sharedScene.text}\n`;
         }
@@ -354,7 +358,7 @@ const GameApp: React.FC = () => {
             //   + 下方按需注入的记忆宫殿向量召回（只取与当前情境相关的片段）。
             //   同时跳过共享场景里已铺过的用户档案 / 世界书 / 世界观，彻底去重。
             await injectMemoryPalace(p);
-            const core = ContextBuilder.buildCoreContext(p, userProfile, false, undefined, {
+            const core = ContextBuilder.buildCoreContext({ ...p, mountedWorldbooks: [] }, userProfile, false, undefined, {
                 skipUserProfile: true,
                 skipWorldview: sharedScene.worldviewIsShared,
                 skipWorldbookIds: sharedScene.sharedWorldbookIds,
@@ -515,7 +519,7 @@ ${playerContext}
   ]
 }`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             const rawContent = extractContent(data);
             if (!rawContent) throw new Error('AI 返回了空响应');
 
@@ -777,7 +781,7 @@ ${rollInstruction}
   ]
 }`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             const rawContent = extractContent(data);
             if (!rawContent) throw new Error('AI 返回了空响应');
 
@@ -886,7 +890,7 @@ ${logText}
 
 直接输出总结正文：`;
 
-            const data = await fetchGameAPI(prompt, 1500);
+            const data = await fetchGameAPI(prompt, 1500, players);
             let summaryText = (extractContent(data) || '').trim();
             if (!summaryText) summaryText = '（这段冒险继续推进了剧情）';
 
@@ -1045,7 +1049,7 @@ Logs:
 ${logText}
 Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆"). No preamble.`;
 
-            const data = await fetchGameAPI(prompt);
+            const data = await fetchGameAPI(prompt, 8000, players);
             let summary = extractContent(data) || '进行了一场冒险';
             summary = summary.replace(/[。\.]$/, ''); // Remove trailing dot
 
@@ -1625,9 +1629,9 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                     const renderLogs = (logs: GameLog[]) => (
                         <div className={`pl-3 border-l-2 ${theme.border} space-y-1.5 mt-2`}>
                             {logs.map((log, li) => (
-                                <div key={log.id || li} className="text-[11px] leading-snug">
+                                <div key={log.id || li} className="text-sm leading-relaxed break-words" data-game-archived-log={log.id}>
                                     <span className="font-bold opacity-70">{log.role === 'gm' ? 'GM' : (log.speakerName || 'System')}: </span>
-                                    <span className="opacity-70">{log.content.replace(/\n+/g, ' ').slice(0, 140)}{log.content.length > 140 ? '…' : ''}</span>
+                                    <GameMarkdown content={log.content} theme={theme} />
                                 </div>
                             ))}
                         </div>
@@ -1653,9 +1657,9 @@ Output: A concise summary in Chinese (e.g. "探索了地牢并击败了史莱姆
                                                     className={`w-full text-left text-[10px] font-mono opacity-50 hover:opacity-90 transition-opacity flex items-center gap-1.5`}
                                                 >
                                                     <span>{open ? '▾' : '▸'}</span>
-                                                    <span>第 {g.index + 1} 段 · 原文 {g.logs.length} 条 {open ? '' : '(点击查看)'}</span>
+                                                    <span>第 {g.index + 1} 段 · 完整原文 {g.logs.length} 条 {open ? '' : '(点击展开)'}</span>
                                                 </button>
-                                                {open && <div className="opacity-50">{renderLogs(g.logs)}</div>}
+                                                {open && <div>{renderLogs(g.logs)}</div>}
                                                 {/* 原文下面就是这段的总结 */}
                                                 <div className={`p-4 rounded-lg border ${theme.border} ${theme.cardBg} text-xs italic leading-relaxed opacity-80`}>
                                                     <div className="text-[10px] font-bold uppercase tracking-widest mb-1 not-italic opacity-70">前情提要 · 第 {g.index + 1} 段</div>

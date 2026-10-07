@@ -46,10 +46,12 @@ import {
 import {
   AMSG_FIRE_PACK_KEY,
   AMSG_SLOT_CURRENT_TIME, AMSG_SLOT_REALTIME_WORLD, AMSG_SLOT_SCENE,
+  AMSG_SILENT_MARK, AMSG_SLOT_LIVE_CHAT,
   AMSG_SLOT_TASK_LIST, AMSG_SLOT_TIME_SINCE_USER, AMSG_SLOT_USER_CLOCK,
 } from './amsgFirePack';
 import { clearInstantChatPending, setInstantChatPending } from './amsgInstantChat';
 import { AMSG_TOOL_CONFIG_KEY, AMSG_TOOL_PACK_KEY } from './amsgToolPack';
+import { AMSG_LIMITS_KEY } from './amsgLimits';
 import * as dailySchedule from './dailySchedule';
 import { ChatPrompts } from './chatPrompts';
 import { DB } from './db';
@@ -76,6 +78,17 @@ vi.mock('./activeMsgStore', () => ({
 }));
 
 const ENTRIES = [{ namespace: 'amsg:char:x', key: 'fire_pack', value: '{}', updatedAt: 1 }];
+
+it('已经停止的即时请求不会开始准备或上传下一轮状态', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  try {
+    await expect(ActiveMsgClient.sendInstantChat({ signal: controller.signal } as any))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  } finally { fetchSpy.mockRestore(); }
+});
 
 /** 只需要 putClientState 这一个方法，其余 InternalReiClient 成员用不到。 */
 const clientWith = (impl: any) => ({ putClientState: impl } as any);
@@ -535,6 +548,33 @@ describe('连接前的 worker 配置自检', () => {
   // 的话，「重新连接并验证」拿回来的还是握着旧密钥的老 client：init-tenant 成功、界面报
   // 「连接成功」，此后每一次加密调用 worker 都解不开（即时对话每发一条挂一条、任务到点
   // 全失败），只有整页刷新能恢复。
+  // 回归守卫：connect() 握手后把配置整份写回，而那份是握手**之前**读的快照。握手顺手发起的
+  // 能力探测可能已经抢先落了新结论（用户刚更新完 Worker 点「重新连接」正是这种时候），
+  // 整份写回会把 instantChatSupported / workerBundleVersion 盖回旧值——SAR 信封回合的版本
+  // 闸门就会拿着过期的「旧版」一直把人挡在本地。
+  it('写回配置时不带两样探测结论（不拿握手前的旧值盖掉刚探到的新结论）', async () => {
+    routeFetch({});
+    reiClient.init.mockReset().mockResolvedValue(undefined);
+    storeConfigExtra.value = { instantChatSupported: false, workerBundleVersion: '2000-01-01', instantChatEnabled: true };
+    const { ActiveMsgStore } = await import('./activeMsgStore');
+    (ActiveMsgStore.saveGlobalConfig as any).mockClear();
+    try {
+      await ActiveMsgClient.connect();
+    } finally {
+      storeConfigExtra.value = {};
+    }
+    const writeBack = (ActiveMsgStore.saveGlobalConfig as any).mock.calls
+      .map((call: any[]) => call[0])
+      .find((update: Record<string, unknown>) => 'initializedAt' in update);
+    expect(writeBack).toBeDefined();
+    // 用户自己的配置照常写回……
+    expect(writeBack.workerUrl).toBe('https://amsg.example.workers.dev');
+    expect(writeBack.instantChatEnabled).toBe(true);
+    // ……探测结论一个都不带。
+    expect(writeBack).not.toHaveProperty('instantChatSupported');
+    expect(writeBack).not.toHaveProperty('workerBundleVersion');
+  });
+
   it('「重新连接并验证」每按一次都真的重新握手（换过 master key 后旧密钥必须被丢掉）', async () => {
     routeFetch({});
     reiClient.init.mockReset().mockResolvedValue(undefined);
@@ -698,6 +738,13 @@ describe('scheduleCharacterTask 与欠着的即时对话 chat 段', () => {
   it('没欠着回复 → fire_pack 照常整份覆盖上去', async () => {
     await schedule();
     expect(writtenKeys()).toContain(AMSG_FIRE_PACK_KEY);
+  });
+
+  // 上限单独一份、每次传上下文都顺手带上（欠着回复时也照带：它跟 chat 段无关）。
+  it('排任务时顺手把「频率与额度」那份一起传上去', async () => {
+    setInstantChatPending(CHAR_ID, 'uuid-waiting');
+    await schedule();
+    expect(writtenKeys()).toContain(AMSG_LIMITS_KEY);
   });
 
   it('欠着回复 → 这一批把 fire_pack 抽掉，tool_pack / tool_config 照写、任务照建', async () => {
@@ -964,13 +1011,11 @@ describe('buildFirePack 的时区参照系与模板（①）', () => {
     expect(out.template).toContain(`现在是 ${AMSG_SLOT_CURRENT_TIME}`);
   });
 
-  it('随包带上用户设的连发上限；没设就不带（worker 侧用默认值）', async () => {
+  // 上限不再跟着 fire_pack 走：那一份要等「有待发任务、聊完一轮」才重传，改了上限会迟迟
+  // 不生效。上限单独住在 limits 那份记录里（见 amsgLimits），包里不该再有它。
+  it('fire_pack 不带连发上限（上限单独同步，见 amsgLimits）', async () => {
     const withLimit = await pack(baseChar({ activeMsg2Config: { enabled: true, maxUnansweredSends: 5 } }));
-    expect(withLimit.maxUnansweredSends).toBe(5);
-    const unlimited = await pack(baseChar({ activeMsg2Config: { enabled: true, maxUnansweredSends: 0 } }));
-    expect(unlimited.maxUnansweredSends).toBe(0);
-    const unset = await pack(baseChar());
-    expect(unset.maxUnansweredSends).toBeUndefined();
+    expect(withLimit).not.toHaveProperty('maxUnansweredSends');
   });
 
   // 回归守卫：用户设备的时区以前一个字都没上云。角色只看得到自己那边的钟，
@@ -1006,6 +1051,18 @@ describe('buildFirePack 的时区参照系与模板（①）', () => {
     const { template } = await pack(baseChar());
     expect(template).toContain('日子也在往前过');
     expect(template).toContain('关心别变成查岗');
+  });
+
+  // 到点说不说由角色看着最新对话自己判。模板得把三样东西交到它手上：正聊着时那行事实的
+  // 落点、「正聊着不等于不说」这条分寸、决定不说时写什么。缺了标记，角色的「不说」就只能
+  // 是空输出，跟模型没写出来分不开。
+  it('【开口之前】带上正聊着的落点、默认是说的分寸、和不说时的标记', async () => {
+    const { template } = await pack(baseChar());
+    const section = template.slice(template.indexOf('【开口之前】'));
+    expect(section).toContain(AMSG_SLOT_LIVE_CHAT);
+    expect(section).toContain('默认是照常说');
+    expect(section).toContain('正聊着不等于不说');
+    expect(section).toContain(`只写 ${AMSG_SILENT_MARK} 这一个标记`);
   });
 
   // 回归守卫：timeAwarenessEnabled=false 的架空角色在前台连今天几号都读不到
@@ -1413,11 +1470,12 @@ describe('ActiveMsgClient.refreshApiCredentialsForPendingTasks（③ 凭据变�
 
   beforeEach(() => {
     reiClient.init.mockReset().mockResolvedValue(undefined);
+    vi.spyOn(ActiveMsgClient, 'listAllTasks').mockResolvedValue([]);
     reiClient.updateMessage.mockReset().mockResolvedValue({ success: true });
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('只刷「开着 2.0 且 pending 的 AI 任务」，三字段载荷；单独 API 的角色写单独 API 的值', async () => {
+  it('只刷「开着 2.0 且 pending 的 AI 任务」，旧单独 API 也统一使用主 API', async () => {
     vi.spyOn(DB, 'getAllCharacters').mockResolvedValue([
       { id: 'char-a', activeMsg2Config: { enabled: true, tasks: [
         remoteTask('a1'),
@@ -1444,13 +1502,54 @@ describe('ActiveMsgClient.refreshApiCredentialsForPendingTasks（③ 凭据变�
       primaryModel: 'gpt-x',
     });
     expect(byUuid.get('c1')).toEqual({
-      apiUrl: 'https://sec.example.com/chat/completions',
-      apiKey: 'sec-key',
-      primaryModel: 'sec-model',
+      apiUrl: 'https://api.example.com/v1/chat/completions',
+      apiKey: 'new-key',
+      primaryModel: 'gpt-x',
     });
   });
 
-  it('没有 pending AI 任务（只剩 fixed / 全关掉）→ no-tasks，一个请求都不发', async () => {
+  it('迁移云端自排任务，保留情绪引用，跳过 fixed / 后台作业 / 正在等的即时回复', async () => {
+    vi.spyOn(DB, 'getAllCharacters').mockResolvedValue([
+      { id: 'char-a', activeMsg2Config: { enabled: true, tasks: [] } },
+    ] as any);
+    const remote = (uuid: string, extra: Record<string, unknown> = {}) => ({
+      uuid, charId: 'char-a', status: 'pending', messageType: 'auto', messageSubtype: 'chat', ...extra,
+    });
+    vi.mocked(ActiveMsgClient.listAllTasks).mockResolvedValue([
+      remote('ref', { credRefs: { chat: 'char:char-a/chat', emotion: 'char:char-a/emotion' } }),
+      remote('inline'),
+      remote('instant-child', { messageSubtype: 'instant-chat', credRefs: { chat: 'char:char-a/instant' } }),
+      remote('fixed', { messageType: 'fixed' }),
+      remote('job', { messageSubtype: 'job' }),
+      remote('instant', { messageSubtype: 'instant-chat' }),
+      remote('disabled', { charId: 'char-disabled' }),
+      remote('done', { status: 'completed' }),
+    ]);
+    vi.spyOn(ActiveMsgClient, 'putLlmCredentials').mockResolvedValue(1);
+    reiClient._decrypt.mockImplementation(async (payload: unknown) => payload);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({
+      status: 200,
+      text: async () => JSON.stringify({ success: true, data: { task: {
+        metadata: url.includes('instant-child') ? { amsgSelfScheduled: true } : { amsgInstantChat: true },
+      } } }),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    })));
+    try {
+      const result = await ActiveMsgClient.refreshApiCredentialsForPendingTasks(API);
+      expect(result).toEqual({ status: 'ok', updated: 3, failed: 0 });
+      expect(reiClient.updateMessage.mock.calls).toEqual([
+        ['ref', { credRefs: { chat: 'char:char-a/chat', emotion: 'char:char-a/emotion' } }],
+        ['inline', { apiUrl: 'https://api.example.com/v1/chat/completions', apiKey: 'new-key', primaryModel: 'gpt-x' }],
+        ['instant-child', { credRefs: { chat: 'char:char-a/chat' } }],
+      ]);
+      expect(ActiveMsgClient.putLlmCredentials).toHaveBeenCalledWith([{
+        credId: 'char:char-a/chat',
+        value: { apiUrl: 'https://api.example.com/v1/chat/completions', apiKey: 'new-key', primaryModel: 'gpt-x' },
+      }]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('没有 pending AI 任务（只剩 fixed / 全关掉）→ no-tasks，不写任务凭据', async () => {
     vi.spyOn(DB, 'getAllCharacters').mockResolvedValue([
       { id: 'char-a', activeMsg2Config: { enabled: true, tasks: [remoteTask('a2', { mode: 'fixed' })] } },
     ] as any);
@@ -1460,7 +1559,7 @@ describe('ActiveMsgClient.refreshApiCredentialsForPendingTasks（③ 凭据变�
     expect(reiClient.updateMessage).not.toHaveBeenCalled();
   });
 
-  it('某个角色凭据配不齐（单独 API 缺字段）→ 该角色整组记失败，别拦其他角色', async () => {
+  it('残缺的旧单独 API 不影响主 API 刷新', async () => {
     vi.spyOn(DB, 'getAllCharacters').mockResolvedValue([
       { id: 'char-broken', activeMsg2Config: {
         enabled: true,
@@ -1473,18 +1572,19 @@ describe('ActiveMsgClient.refreshApiCredentialsForPendingTasks（③ 凭据变�
 
     const result = await ActiveMsgClient.refreshApiCredentialsForPendingTasks(API);
 
-    expect(result).toEqual({ status: 'partial', updated: 1, failed: 1 });
-    expect(reiClient.updateMessage.mock.calls.map((c: any[]) => c[0])).toEqual(['y1']);
+    expect(result).toEqual({ status: 'ok', updated: 2, failed: 0 });
+    expect(reiClient.updateMessage.mock.calls.map((c: any[]) => c[0])).toEqual(['x1', 'y1']);
   });
 });
 
 describe('ActiveMsgClient.refreshCharPendingAiTaskCredentials（③ 面板保存后的单角色版）', () => {
   beforeEach(() => {
     reiClient.init.mockReset().mockResolvedValue(undefined);
+    vi.spyOn(ActiveMsgClient, 'listAllTasks').mockResolvedValue([]);
     reiClient.updateMessage.mockReset().mockResolvedValue({ success: true });
   });
 
-  it('fixed 再滤一遍；凭据按传入的 config（面板手里的最新值）算，不读 DB', async () => {
+  it('fixed 再滤一遍；忽略旧的单独 API，按主 API 刷新', async () => {
     const result = await ActiveMsgClient.refreshCharPendingAiTaskCredentials({
       char: { id: 'char-a' } as any,
       config: {
@@ -1500,9 +1600,9 @@ describe('ActiveMsgClient.refreshCharPendingAiTaskCredentials（③ 面板保存
     expect(reiClient.updateMessage).toHaveBeenCalledTimes(1);
     expect(reiClient.updateMessage.mock.calls[0][0]).toBe('t1');
     expect(reiClient.updateMessage.mock.calls[0][1]).toEqual({
-      apiUrl: 'https://sec.example.com/chat/completions',
-      apiKey: 'sec-key',
-      primaryModel: 'sec-model',
+      apiUrl: 'https://api.example.com/chat/completions',
+      apiKey: 'k',
+      primaryModel: 'm',
     });
   });
 

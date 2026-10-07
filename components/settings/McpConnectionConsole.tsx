@@ -188,7 +188,8 @@ const McpConnectionConsole: React.FC<{
                     <div>
                         <h3 className="text-sm font-bold text-slate-800">MCP 工具服务器</h3>
                         <p className="mt-1 max-w-[250px] text-[10px] leading-relaxed text-slate-500">
-                            连接支持 Streamable HTTP 的 MCP 服务器，让聊天调用其中的工具。
+                            连接 MCP，让角色在聊天时使用你接入的工具。
+                            <span className="mt-1 block text-slate-400">支持 Streamable HTTP</span>
                         </p>
                     </div>
                     <button
@@ -336,7 +337,7 @@ const McpConnectionConsole: React.FC<{
                                                             <input type="password" className={`${inputClass} font-mono`} value={server.proxyKey || ''} onChange={event => update(server.id, { proxyKey: event.target.value.trim() })} placeholder="PROXY_KEY" />
                                                         </div>
                                                     )}
-                                                    <p className="text-[9px] leading-relaxed text-slate-400">用于解决浏览器 CORS 限制。代理由你自行部署，SullyOS 不强制经过中央服务器。</p>
+                                                    <p className="text-[9px] leading-relaxed text-slate-400">用于解决浏览器 CORS 限制。代理由你自行部署，SullyOS·糯米机 不强制经过中央服务器。</p>
                                                 </div>
                                             </details>
                                         </div>
