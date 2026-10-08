@@ -85,11 +85,11 @@ export async function requestLiteReply(input: {
   memories?: LiteMemoryRecall[];
   signal?: AbortSignal;
 }): Promise<LiteReplyResult> {
-  const { api, cloudContext, localMessages } = input;
+  const { api, localMessages } = input;
   if (!api.baseUrl || !api.apiKey || !api.model) throw new Error('请先在设置中填写当前 API 的地址、密钥和模型');
 
   const identity = input.identity;
-  const history = mergeMessageHistory(cloudContext?.messages || [], localMessages, 50);
+  const history = mergeMessageHistory([], localMessages.filter(m => m.handoffKind !== 'upload'), 50);
   const memoryText = input.memories?.length
     ? `### 记忆宫殿\n以下内容是与本轮话题相关的既有记忆。只在相关时自然影响回复，不要逐条复述，也不要向用户解释检索过程。\n${input.memories.map((memory) => `- **[${memory.room || '记忆'}]**（重要性 ${memory.importance}）：${memory.content}`).join('\n')}`
     : '';
@@ -98,9 +98,6 @@ export async function requestLiteReply(input: {
     buildLiteBuiltinChatPrompt(),
     buildLiteStickerPrompt(input.stickers || []),
     `你现在以「${identity.characterName}」的身份和「${identity.userName}」继续同一段跨设备对话。`,
-    cloudContext
-      ? '下面的聊天历史可能来自另一台设备。把它当作自己亲历的最近对话，自然接续；不要向用户解释同步、云端或上下文注入。'
-      : '',
     memoryText,
   ].filter(Boolean).join('\n\n');
   const modelHistory = history.map((message) => {
@@ -114,7 +111,7 @@ export async function requestLiteReply(input: {
     };
   });
   const latestMessage = modelHistory.pop();
-  const liveTimeText = buildLiteTimeAwarenessPrompt(new Date(), history);
+  const liveTimeText = buildLiteTimeAwarenessPrompt(new Date(), history.filter(m => m.role !== 'system'));
 
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 120_000);

@@ -1,4 +1,4 @@
-export type HandoffMessageRole = 'user' | 'assistant';
+export type HandoffMessageRole = 'user' | 'assistant' | 'system';
 export type HandoffMessageOrigin = 'main' | 'lite';
 
 export interface HandoffMessage {
@@ -7,6 +7,9 @@ export interface HandoffMessage {
   content: string;
   createdAt: number;
   origin: HandoffMessageOrigin;
+  handoffKind?: 'upload' | 'receive';
+  handoffLabel?: string;
+  handoffSummary?: string;
 }
 
 export interface SharedRecentContext {
@@ -17,6 +20,7 @@ export interface SharedRecentContext {
   sourceDeviceName: string;
   revision: number;
   updatedAt: number;
+  prompt?: string;
 }
 
 export interface HandoffCloudConfig {
@@ -54,7 +58,7 @@ export function isHandoffMessage(value: unknown): value is HandoffMessage {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
   return typeof item.id === 'string'
-    && (item.role === 'user' || item.role === 'assistant')
+    && (item.role === 'user' || item.role === 'assistant' || item.role === 'system')
     && typeof item.content === 'string'
     && typeof item.createdAt === 'number'
     && Number.isFinite(item.createdAt)
@@ -98,6 +102,7 @@ export function parseSharedContextRow(row: Record<string, unknown>): SharedRecen
     sourceDeviceName: String(row.source_device_name || row.source_device || ''),
     revision: Number(row.revision) || 1,
     updatedAt: Number(row.updated_at) || 0,
+    prompt: String(normalizeHandoffMessages(row.messages).find(m => m.handoffKind === 'upload')?.handoffSummary || row.prompt || ''),
   };
 }
 
@@ -111,6 +116,54 @@ export function newHandoffMessage(role: HandoffMessageRole, content: string): Ha
     createdAt: Date.now(),
     origin: 'lite',
   };
+}
+
+export function buildReceivedHandoff(context: SharedRecentContext, config: HandoffCloudConfig): HandoffMessage {
+  const source = context.sourceDeviceName || '未命名设备';
+  const destination = config.deviceName.trim() || '未命名设备';
+  const label = `以下消息接收自 ${source} · 接收于 ${destination}`;
+  return {
+    id: `received:${context.sourceDeviceId}:${context.updatedAt}:${context.revision}`,
+    role: 'system', origin: 'lite', createdAt: Math.max(1, (context.messages.find(m => m.role !== 'system')?.createdAt || context.updatedAt) - 1),
+    content: [label, context.prompt?.trim(), `现在已迁移至 ${destination} 继续对话。`].filter(Boolean).join('\n'),
+    handoffKind: 'receive', handoffLabel: label,
+  };
+}
+
+export function receiveHandoffMessages(context: SharedRecentContext, config: HandoffCloudConfig, local: HandoffMessage[]): HandoffMessage[] {
+  if (context.sourceDeviceId === config.deviceId) return local;
+  const marker = buildReceivedHandoff(context, config);
+  if (local.some(m => m.id === marker.id)) return local;
+  return mergeHandoffMessages([], [marker, ...context.messages.filter(m => m.role !== 'system'), ...local], 100);
+}
+
+export function handoffSummaryInstructions(at = new Date()): string {
+  // This is the user's device migration time, deliberately in device local time.
+  const time = `${at.getFullYear()}年${at.getMonth() + 1}月${at.getDate()}日${at.getHours()}时${at.getMinutes()}分`;
+  return `请根据最近对话写一段简短的跨设备迁移总结，使用用户第一人称，约80–150字，不虚构事实。以“现在是${time}，我刚才在”开头，说明刚才在做什么、聊到哪里及尚未完成的事，以“接下来要进行迁移。”结尾。只输出总结正文，不写分析。这是临时接力上下文，不是长期记忆。`;
+}
+
+export async function generateHandoffSummary(api: { baseUrl: string; apiKey: string; model: string }, messages: Array<{ role: string; content: unknown }>): Promise<string> {
+  if (!api.baseUrl.trim() || !api.model.trim()) throw new Error('请先填写聊天 API 地址和模型');
+  const base = api.baseUrl.trim().replace(/\/+$/, '');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const response = await fetch(base.endsWith('/chat/completions') ? base : `${base}/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(api.apiKey ? { Authorization: `Bearer ${api.apiKey.trim()}` } : {}) },
+      body: JSON.stringify({ model: api.model, stream: false, messages }),
+      signal: controller.signal,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error?.message || `生成迁移总结失败（${response.status}）`);
+    const raw = data?.choices?.[0]?.message?.content;
+    const text = (typeof raw === 'string' ? raw : Array.isArray(raw) ? raw.map(p => p.text || '').join('') : '').replace(/<(think|thinking)>[\s\S]*?<\/\1>/gi, '').trim();
+    if (!text) throw new Error('API 没有返回迁移总结，请重试');
+    return text;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') throw new Error('生成迁移总结超过两分钟，请重试');
+    throw error;
+  } finally { clearTimeout(timeout); }
 }
 
 function normalizedConfig(config: HandoffCloudConfig): HandoffCloudConfig {
@@ -154,7 +207,7 @@ async function readError(response: Response): Promise<string> {
 
 export async function fetchSharedContext(config: HandoffCloudConfig): Promise<SharedRecentContext | null> {
   const clean = ensureConfig(config);
-  const query = '?select=brain_id,char_id,messages,source_device_id,source_device_name,revision,updated_at&brain_id=eq.primary&limit=1';
+  const query = '?select=*&brain_id=eq.primary&limit=1';
   const response = await fetch(tableUrl(clean, query), { headers: headers(clean) });
   if (!response.ok) throw new Error(await readError(response));
   const rows = await response.json();
@@ -163,7 +216,7 @@ export async function fetchSharedContext(config: HandoffCloudConfig): Promise<Sh
 
 export async function testSharedContextConnection(config: HandoffCloudConfig): Promise<string> {
   const context = await fetchSharedContext(config);
-  return context ? `连接成功，已找到第 ${context.revision} 版共享上下文` : '连接成功，目前还没有同步过上下文';
+  return context ? `连接成功，已发布来自 ${context.sourceDeviceName || '未命名设备'}` : '连接成功，目前还没有同步过上下文';
 }
 
 export async function publishSharedContext(input: {
@@ -173,12 +226,24 @@ export async function publishSharedContext(input: {
   localMessages: HandoffMessage[];
   previousRevision?: number;
   allowEmptyMessages?: boolean;
+  summary?: string;
 }): Promise<SharedRecentContext> {
   const clean = ensureConfig(input.config);
   const charId = input.charId.trim();
   if (!charId) throw new Error('缺少原版角色 ID，请先在原版聊天页发布一次近期上下文');
-  const messages = mergeHandoffMessages(input.sharedMessages, input.localMessages);
+  const messages = mergeHandoffMessages(input.sharedMessages, input.localMessages).filter(m => m.role !== 'system');
   if (messages.length === 0 && !input.allowEmptyMessages) throw new Error('当前没有可以同步的聊天内容');
+  // Carry the handoff envelope inside JSON messages so existing Supabase and
+  // Worker stores retain it without a schema migration. Reserve one of 30 slots.
+  if (input.summary?.trim()) {
+    messages.splice(0, Math.max(0, messages.length - (SHARED_CONTEXT_LIMIT - 1)));
+    messages.push({
+      id: `handoff:${clean.deviceId}:${Date.now()}`, role: 'system',
+      content: `上传于 ${clean.deviceName || '未命名设备'}`, createdAt: Date.now(), origin: 'lite',
+      handoffKind: 'upload', handoffLabel: `上传于 ${clean.deviceName || '未命名设备'}`,
+      handoffSummary: input.summary.trim(),
+    });
+  }
   const payload = {
     brain_id: HANDOFF_BRAIN_ID,
     char_id: charId,

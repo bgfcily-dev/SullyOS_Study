@@ -1520,7 +1520,7 @@ const MessageItem = React.memo(({
         }
 
         // Clean up text: remove [System:] or [系统:] prefix for display
-        const displayText = m.content.replace(/^\[(System|系统|System Log|系统记录)\s*[:：]?\s*/i, '').replace(/\]$/, '').trim();
+        const displayText = (m.metadata?.handoffLabel || m.content).replace(/^\[(System|系统|System Log|系统记录)\s*[:：]?\s*/i, '').replace(/\]$/, '').trim();
 
         if (isCallSummary) {
             const durationSec = Math.max(1, Number(m.metadata?.durationSec || 0));

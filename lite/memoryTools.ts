@@ -266,7 +266,7 @@ export async function prepareLiteContextMemories(input: {
   if (!api.baseUrl.trim() || !api.apiKey.trim() || !api.model.trim()) {
     throw new Error('请先完成用于整理记忆的语言模型 API 配置');
   }
-  const messages = input.messages.slice(-50);
+  const messages = input.messages.filter(m => m.role !== 'system').slice(-50);
   if (messages.length < 2) throw new Error('当前上下文太少，至少需要 2 条消息');
   const conversation = messages.map((message) => {
     const speaker = message.role === 'user' ? identity.userName || '用户' : identity.characterName || '角色';

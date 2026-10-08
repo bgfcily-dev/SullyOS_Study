@@ -14,6 +14,7 @@ export async function recallLiteMemories(input: {
     throw new Error('长期记忆已开启，但 Embedding API 尚未填写完整');
   }
   const query = messages
+    .filter(message => message.role !== 'system')
     .slice(-3)
     .map((message) => message.content)
     .join('\n')

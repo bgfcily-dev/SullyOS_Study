@@ -401,6 +401,7 @@ export async function extractMemoriesFromBuffer(
     relatedMemories?: RelatedMemoryRef[],
     pinnedMemories?: PinnedMemoryRef[],
 ): Promise<BufferExtractionResult> {
+    messages = messages.filter(m => m.metadata?.source !== 'handoff_receive' && m.metadata?.source !== 'handoff_upload');
     if (messages.length === 0) return { memories: [], crossTimeLinks: [], eventBoxHints: [], unpinIds: [], corrections: [] };
 
     const includeEntities = readRecallRuntimeSnapshot().featureFlagsSnapshot.recallRouter;

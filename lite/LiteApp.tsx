@@ -1,3 +1,4 @@
+import { generateHandoffSummary, handoffSummaryInstructions, receiveHandoffMessages } from '../utils/recentContextHandoff';
 import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowClockwise,
@@ -176,7 +177,11 @@ export function LiteApp() {
   const [stickerText, setStickerText] = useState(loadStickerText);
   const [localMessages, setLocalMessages] = useState<LiteMessage[]>(loadLocalMessages);
   const [deletedMessageIds, setDeletedMessageIds] = useState<string[]>(loadDeletedMessageIds);
-  const [cloudContext, setCloudContext] = useState<SharedRecentContext | null>(null);
+  const [cloudContext, setCloudContext] = useState<SharedRecentContext | null>(() => {
+    try { const saved = JSON.parse(localStorage.getItem('handoff_received_context_v1') || 'null'); return saved?.url === cloudConfig.supabaseUrl ? saved.context : null; } catch { return null; }
+  });
+  const receivedHandoffRef = useRef('');
+  const [handoffPreview, setHandoffPreview] = useState<{ input: Parameters<typeof publishSharedContext>[0]; summary: string } | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
@@ -223,7 +228,7 @@ export function LiteApp() {
   const activeApi = apiProfiles.find((profile) => profile.id === activeApiId) || apiProfiles[0];
   const deletedMessageIdSet = useMemo(() => new Set(deletedMessageIds), [deletedMessageIds]);
   const visibleLocalMessages = useMemo(() => localMessages.filter((message) => !deletedMessageIdSet.has(message.id)), [deletedMessageIdSet, localMessages]);
-  const visibleCloudMessages = useMemo(() => (cloudContext?.messages || []).filter((message) => !deletedMessageIdSet.has(message.id)), [cloudContext, deletedMessageIdSet]);
+  const visibleCloudMessages = useMemo<LiteMessage[]>(() => [], []);
   const shownMessages = useMemo(
     () => mergeMessageHistory(visibleCloudMessages, visibleLocalMessages, 100),
     [visibleCloudMessages, visibleLocalMessages],
@@ -347,6 +352,17 @@ export function LiteApp() {
     try {
       const next = await fetchSharedContext(cloudConfig);
       setCloudContext(next);
+      try { localStorage.setItem('handoff_received_context_v1', JSON.stringify({ url: cloudConfig.supabaseUrl, context: next })); } catch { /* Continue in this session when browser storage is unavailable. */ }
+      if (next && next.sourceDeviceId !== cloudConfig.deviceId) {
+        const receipt = JSON.stringify([cloudConfig.supabaseUrl, cloudConfig.deviceId, next.charId, next.sourceDeviceId, next.updatedAt, next.revision]);
+        let previousReceipt = receivedHandoffRef.current;
+        try { previousReceipt ||= localStorage.getItem('handoff_last_receipt_v1') || ''; } catch { /* Session receipt remains available. */ }
+        if (previousReceipt !== receipt) {
+          setLocalMessages(current => receiveHandoffMessages(next, cloudConfig, current).filter(m => !deletedMessageIdSet.has(m.id)));
+          receivedHandoffRef.current = receipt;
+          try { localStorage.setItem('handoff_last_receipt_v1', receipt); } catch { /* Session deduplication remains available. */ }
+        }
+      }
       setCloudConnected(true);
       if (!quiet) setNotice({ kind: 'success', text: next ? '已读取最新共享上下文' : '连接成功，云端目前没有共享上下文' });
       return next;
@@ -464,7 +480,8 @@ export function LiteApp() {
     const localMessagesForRequest = visibleLocalMessages.filter((message) => !replacing.has(message.id));
     const cloudMessagesForRequest = visibleCloudMessages.filter((message) => !replacing.has(message.id));
     const messagesForRequest = mergeMessageHistory(cloudMessagesForRequest, localMessagesForRequest, 100);
-    const latestMessage = messagesForRequest[messagesForRequest.length - 1];
+    const dialogueMessages = messagesForRequest.filter(m => m.role !== 'system');
+    const latestMessage = dialogueMessages[dialogueMessages.length - 1];
     if (!latestMessage || latestMessage.role !== 'user') {
       setNotice({ kind: 'info', text: '请先发送一条消息，再点击“生成”。' });
       return;
@@ -484,7 +501,7 @@ export function LiteApp() {
     setStatusDetailsOpen(false);
     setSending(true);
     try {
-      const latestCloud = cloudReady ? await refreshCloud(true) : cloudContext;
+      const latestCloud = cloudContext;
       const activeCloud = latestCloud || cloudContext;
       const visibleActiveCloud = activeCloud ? {
         ...activeCloud,
@@ -495,7 +512,7 @@ export function LiteApp() {
         try {
           memories = await recallLiteMemories({
             charId: visibleActiveCloud.charId,
-            messages: mergeMessageHistory(visibleActiveCloud.messages, localMessagesForRequest, 50),
+            messages: localMessagesForRequest.filter(m => m.role !== 'system').slice(-50),
             cloud: cloudConfig,
             embedding: embeddingConfig,
           });
@@ -503,7 +520,7 @@ export function LiteApp() {
           setNotice({ kind: 'info', text: `长期记忆暂未读取，本轮仍会继续聊天：${error?.message || '未知错误'}` });
         }
       }
-      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: visibleActiveCloud, localMessages: localMessagesForRequest, memories, stickers });
+      const reply = await requestLiteReply({ api: activeApi, identity, cloudContext: null, localMessages: localMessagesForRequest, memories, stickers });
       setLastTokenUsage(reply.usage);
       setReplyStatus('success');
       const replyParts = splitLiteReplyParts(reply.text, stickers.map((sticker) => sticker.name));
@@ -706,27 +723,41 @@ export function LiteApp() {
   };
 
   const syncToCloud = async () => {
+    if (cloudBusy || sending) return;
     setCloudBusy(true);
-    setSettingsNotice({ kind: 'info', text: '正在同步近期上下文…' });
+    setSettingsNotice({ kind: 'info', text: '正在生成迁移总结…' });
     try {
       const latestCloud = cloudReady ? await fetchSharedContext(cloudConfig) : cloudContext;
-      const next = await publishSharedContext({
-        config: cloudConfig,
-        charId: latestCloud?.charId || cloudContext?.charId || '',
-        sharedMessages: (latestCloud?.messages || []).filter((message) => !deletedMessageIdSet.has(message.id)),
-        localMessages: visibleLocalMessages,
-        previousRevision: latestCloud?.revision || 0,
-      });
+      const messages = visibleLocalMessages.filter(m => m.role !== 'system').slice(-30);
+      if (!messages.length) throw new Error('当前没有可以迁移的聊天内容');
+      const summary = await generateHandoffSummary(activeApi, [
+        ...messages.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: handoffSummaryInstructions() },
+      ]);
+      setHandoffPreview({ input: { config: { ...cloudConfig }, charId: latestCloud?.charId || cloudContext?.charId || '',
+        sharedMessages: [], localMessages: messages, previousRevision: latestCloud?.revision || 0 }, summary });
+      setSettingsNotice(null);
+    } catch (error: any) {
+      setSettingsNotice({ kind: 'error', text: error?.message || '生成迁移总结失败' });
+    } finally { setCloudBusy(false); }
+  };
+
+  const confirmHandoffUpload = async () => {
+    if (!handoffPreview?.summary.trim() || cloudBusy) return;
+    setCloudBusy(true);
+    try {
+      const next = await publishSharedContext({ ...handoffPreview.input, summary: handoffPreview.summary });
       setCloudContext(next);
+      try { localStorage.setItem('handoff_received_context_v1', JSON.stringify({ url: handoffPreview.input.config.supabaseUrl, context: next })); } catch { /* Upload already succeeded. */ }
+      const marker = next.messages.find(m => m.handoffKind === 'upload');
+      if (marker) setLocalMessages(current => [...current, marker]);
       setCloudConnected(true);
       setDeletedMessageIds([]);
-      setSettingsNotice({ kind: 'success', text: `同步成功：已发布第 ${next.revision} 版共享上下文` });
+      setHandoffPreview(null);
+      setSettingsNotice({ kind: 'success', text: `同步成功：已发布来自 ${next.sourceDeviceName}` });
     } catch (error: any) {
-      setCloudConnected(false);
       setSettingsNotice({ kind: 'error', text: error?.message || '同步失败' });
-    } finally {
-      setCloudBusy(false);
-    }
+    } finally { setCloudBusy(false); }
   };
 
   const testCloud = async () => {
@@ -898,6 +929,7 @@ export function LiteApp() {
     try {
       await clearSharedContext(cloudConfig);
       setCloudContext(null);
+      try { localStorage.removeItem('handoff_received_context_v1'); } catch { /* Cloud clearing already succeeded. */ }
       setSettingsNotice({ kind: 'success', text: '清除成功：本机聊天没有删除' });
     } catch (error: any) {
       setSettingsNotice({ kind: 'error', text: error?.message || '清除失败' });
@@ -924,7 +956,7 @@ export function LiteApp() {
 
   return (
     <main
-      className={`lite-shell theme-${theme}${chatBackground ? ' has-chat-background' : ''}${settingsOpen || modelPickerOpen || stickerEditor || messageEditor || syncedMemoryEditor || memoryPreview ? ' has-input-overlay' : ''}`}
+      className={`lite-shell theme-${theme}${chatBackground ? ' has-chat-background' : ''}${settingsOpen || modelPickerOpen || stickerEditor || messageEditor || syncedMemoryEditor || memoryPreview || handoffPreview ? ' has-input-overlay' : ''}`}
       style={{
         '--lite-message-font-size': `${fontSize}px`,
       } as React.CSSProperties}
@@ -961,10 +993,8 @@ export function LiteApp() {
           <p>连接主脑后，这里会自动读取你手动同步的近期上下文，再和当前设备上的对话一起发送给角色。</p>
           <button type="button" onClick={() => openSettings('api')}>完成首次设置</button>
         </div> : <div className="message-list">
-          {cloudContext && visibleCloudMessages.length > 0 && (
-            <div className="handoff-label"><Cloud size={14} /> 来自 {cloudContext.sourceDeviceName || '其他设备'} 的共享上下文</div>
-          )}
           {shownMessages.map((message) => {
+            if (message.role === 'system') return <div className="handoff-label" key={message.id} title={message.handoffKind === 'receive' ? message.content : undefined}><Cloud size={14} /> {message.handoffLabel || message.content}</div>;
             const stickerName = message.content.match(/^\[表情包：(.+)\]$/)?.[1];
             const stickerUrl = stickerName ? stickerMap.get(stickerName) : undefined;
             return <div className={`message-row ${message.role}`} key={message.id}>
@@ -1048,7 +1078,7 @@ export function LiteApp() {
           <button className="sticker-button" type="button" aria-label="选择表情包" title="选择表情包" onClick={() => { setStickerPickerOpen((open) => !open); setComposerMenuOpen(false); }}>
             <Smiley size={23} />
           </button>
-          <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages[shownMessages.length - 1]?.role !== 'user'} onClick={() => void generateReply()}>
+          <button className="generate-button" type="button" aria-label="生成回复" title="生成回复（此时才调用 LLM）" disabled={sending || shownMessages.filter(m => m.role !== 'system').at(-1)?.role !== 'user'} onClick={() => void generateReply()}>
             <CaretUp size={23} weight="fill" />
           </button>
         </form>
@@ -1139,6 +1169,7 @@ export function LiteApp() {
               <label>访问密钥<input type="password" value={cloudConfig.supabaseAnonKey} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseAnonKey: event.target.value })} placeholder="Cloudflare SYNC_TOKEN 或 Supabase anon key" autoCapitalize="none" /></label>
               <p className={`credential-state ${cloudConfig.supabaseAnonKey ? 'ready' : ''}`}>{keyStatus(cloudConfig.supabaseAnonKey)}</p>
               <label>这台设备的名称<input value={cloudConfig.deviceName} onChange={(event) => setCloudConfig({ ...cloudConfig, deviceName: event.target.value })} placeholder="例如：我的手机" /></label>
+              {cloudContext && <p className="field-hint">已发布来自 {cloudContext.sourceDeviceName || '未命名设备'}</p>}
               <p className="field-hint">设备 ID 自动生成：{cloudConfig.deviceId.slice(0, 8)}…</p>
               <p className="field-hint">{cloudContext?.charId ? `原版角色 ID：${cloudContext.charId}` : '尚未收到角色 ID，请在原版“记忆宫殿 → 云端记忆同步”同步一次，再点“测试并读取”。'}</p>
               <div className="button-row">
@@ -1341,6 +1372,16 @@ export function LiteApp() {
         </div>
       )}
 
+      {handoffPreview && (
+        <div className="model-picker-backdrop memory-preview-backdrop" role="presentation" onMouseDown={() => { if (!cloudBusy) setHandoffPreview(null); }}>
+          <section className="memory-preview" role="dialog" aria-modal="true" aria-labelledby="handoff-preview-title" onMouseDown={e => e.stopPropagation()}>
+            <div className="model-picker-header"><div><span>尚未上传 · 上传于 {handoffPreview.input.config.deviceName}</span><h2 id="handoff-preview-title">迁移总结预览</h2></div><button disabled={cloudBusy} onClick={() => setHandoffPreview(null)} className="round-action" aria-label="关闭"><X size={18} /></button></div>
+            <p className="memory-preview-hint">临时总结随近期上下文中转，不写入长期记忆。检查或编辑后确认上传。</p>
+            <textarea aria-label="迁移总结" disabled={cloudBusy} value={handoffPreview.summary} onChange={e => setHandoffPreview({ ...handoffPreview, summary: e.target.value })} style={{ width: '100%', minHeight: 180, padding: 16 }} />
+            <div className="preview-actions"><button className="secondary-button" disabled={cloudBusy} onClick={() => setHandoffPreview(null)}>取消</button><button className="primary-button" disabled={cloudBusy || !handoffPreview.summary.trim()} onClick={() => void confirmHandoffUpload()}>{cloudBusy ? '正在上传' : '确认并上传'}</button></div>
+          </section>
+        </div>
+      )}
       {memoryPreview && (
         <div className="model-picker-backdrop memory-preview-backdrop" role="presentation" onMouseDown={() => { if (!archiveBusy) { setMemoryPreview(null); setMemoryPreviewNotice(null); } }}>
           <section className="memory-preview" role="dialog" aria-modal="true" aria-labelledby="lite-memory-preview-title" onMouseDown={(event) => event.stopPropagation()}>
