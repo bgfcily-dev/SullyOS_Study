@@ -17,6 +17,7 @@ import { useOS } from '../../context/OSContext';
 import { ContextBuilder } from '../../utils/context';
 import { resolveDialogueApi } from '../../utils/characterApi';
 import { loadCharacterContextMessages } from '../../utils/chatContextRange';
+import { nowInTimeZone, resolveCharTimeZone } from '../../utils/timezone';
 import { buildReceivedHandoff, generateHandoffSummary, handoffSummaryInstructions } from '../../utils/recentContextHandoff';
 
 const DEVICE_ID_KEY = 'os_handoff_device_id_v1';
@@ -128,7 +129,7 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
       if (!readable.length) throw new Error('当前可读上下文为空，请先发送消息后再迁移');
       const summary = await generateHandoffSummary(resolveDialogueApi(apiConfig, character), ContextBuilder.buildCharacterRequest(
         { char: character, user: userProfile },
-        [...readable.map(m => ({ role: m.role, content: normalizeMessageContent(m, character.name, userName || 'TA') })), { role: 'user', content: handoffSummaryInstructions() }],
+        [...readable.map(m => ({ role: m.role, content: normalizeMessageContent(m, character.name, userName || 'TA') })), { role: 'user', content: handoffSummaryInstructions(nowInTimeZone(resolveCharTimeZone(character)), character.name) }],
       ));
       setPreview({ input, summary });
     } catch (error: any) {
@@ -215,6 +216,17 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
     }
   };
 
+  if (preview) return (
+    <Modal isOpen={isOpen} title="迁移总结预览" onClose={() => { if (!busy) setPreview(null); }} footer={<>
+      <button type="button" disabled={busy} onClick={() => setPreview(null)} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 font-bold text-slate-600">取消</button>
+      <button type="button" disabled={busy || !preview.summary.trim()} onClick={() => void confirmPublish()} className="flex-1 rounded-2xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? '正在上传…' : '确认并上传'}</button>
+    </>}>
+      <p className="mb-3 text-sm text-slate-600">{character.name}的第一人称迁移总结 · 尚未上传。可编辑后确认，不写入长期记忆。</p>
+      <textarea aria-label="角色迁移总结" value={preview.summary} disabled={busy} onChange={e => setPreview({ ...preview, summary: e.target.value })} className="w-full rounded-xl border border-slate-200 p-3 text-sm" style={{ minHeight: 180 }} />
+      {status?.kind === 'warn' && <p role="alert" className="mt-3 text-sm text-amber-800">{status.text}</p>}
+    </Modal>
+  );
+
   return (
     <Modal isOpen={isOpen} title="跨设备接力" onClose={onClose}>
       <div className="space-y-4 text-sm text-slate-600">
@@ -247,14 +259,9 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
         )}
 
         <div className="grid grid-cols-1 gap-2">
-          {preview && <div role="dialog" aria-label="迁移总结预览" className="rounded-2xl border border-emerald-200 bg-white p-4 space-y-3">
-            <div className="font-bold">迁移总结预览 · 尚未上传</div>
-            <textarea value={preview.summary} disabled={busy} onChange={e => setPreview({ ...preview, summary: e.target.value })} className="w-full min-h-32 rounded-xl border p-3" />
-            <div className="flex gap-3"><button disabled={busy} onClick={() => setPreview(null)}>取消</button><button disabled={busy || !preview.summary.trim()} onClick={() => void confirmPublish()} className="text-emerald-700 font-bold">确认并上传</button></div>
-          </div>}
           <button type="button" disabled={busy} onClick={() => void publishRecent()} className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 font-bold text-white disabled:opacity-50">
             {busy ? <ArrowClockwise size={18} className="animate-spin" /> : <CloudArrowUp size={18} weight="bold" />}
-            生成迁移总结并预览
+            同步上下文 · 生成总结并预览
           </button>
           <button type="button" disabled={busy} onClick={() => void receiveRecent()} className="flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-white px-4 py-3 font-bold text-emerald-700 disabled:opacity-50">
             <CloudArrowDown size={18} weight="bold" />

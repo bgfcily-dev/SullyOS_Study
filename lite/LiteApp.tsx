@@ -1,3 +1,4 @@
+import { buildLiteRoleContext } from './prompts';
 import { generateHandoffSummary, handoffSummaryInstructions, receiveHandoffMessages } from '../utils/recentContextHandoff';
 import React, { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -731,8 +732,9 @@ export function LiteApp() {
       const messages = visibleLocalMessages.filter(m => m.role !== 'system').slice(-30);
       if (!messages.length) throw new Error('当前没有可以迁移的聊天内容');
       const summary = await generateHandoffSummary(activeApi, [
+        { role: 'system', content: buildLiteRoleContext(identity) },
         ...messages.map(m => ({ role: m.role, content: m.content })),
-        { role: 'user', content: handoffSummaryInstructions() },
+        { role: 'user', content: handoffSummaryInstructions(new Date(), identity.characterName) },
       ]);
       setHandoffPreview({ input: { config: { ...cloudConfig }, charId: latestCloud?.charId || cloudContext?.charId || '',
         sharedMessages: [], localMessages: messages, previousRevision: latestCloud?.revision || 0 }, summary });

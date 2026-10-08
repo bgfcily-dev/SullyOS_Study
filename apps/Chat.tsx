@@ -1715,6 +1715,7 @@ const Chat: React.FC = () => {
             trackEvent('打开聊天功能面板项', { action: type });
         }
         switch (type) {
+            case 'handoff': setShowPanel('none'); setHandoffOpen(true); break;
             case 'collaboration': setShowPanel('none'); setCollaborationOpen(true); break;
             case 'memory-link': setShowPanel('none'); setMemoryRepairOpen(true); break;
             case 'favorites': setShowPanel('none'); setFavoritesOpen(true); break;

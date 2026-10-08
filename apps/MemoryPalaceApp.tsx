@@ -1,4 +1,5 @@
 import MemoryMaintenancePanel from '../components/chat/MemoryMaintenancePanel';
+import RecentContextHandoffModal from '../components/chat/RecentContextHandoffModal';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
 import { MemoryTimeText } from '../components/MemoryTimeText';
 import { relativeTimeEdit } from '../utils/memoryPalace/relativeTime';
@@ -909,6 +910,7 @@ export default function MemoryPalaceApp() {
     const [rvTestResult, setRvTestResult] = useState('');
     const [rvTesting, setRvTesting] = useState(false);
     const [rvSyncing, setRvSyncing] = useState(false);
+    const [handoffOpen, setHandoffOpen] = useState(false);
     const [rvSyncProgress, setRvSyncProgress] = useState<{ done: number; total: number; synced: number; failed: number; skipped: number } | null>(null);
     const [rvSyncStatus, setRvSyncStatus] = useState('');
     const [rvReceiving, setRvReceiving] = useState(false);
@@ -1803,28 +1805,21 @@ export default function MemoryPalaceApp() {
             let handoffError = char ? '' : '请先在原版选择角色';
             if (char) {
                 try {
-                    const { fetchSharedContext, publishSharedContext } = await import('../utils/recentContextHandoff');
+                    const { initializeHandoffCharacter } = await import('../utils/recentContextHandoff');
                     const handoffConfig = {
                         supabaseUrl: remoteVectorConfig.supabaseUrl,
                         supabaseAnonKey: remoteVectorConfig.supabaseAnonKey,
                         deviceId: 'main-memory-palace',
                         deviceName: '原版记忆宫殿',
                     };
-                    const previous = await fetchSharedContext(handoffConfig);
-                    await publishSharedContext({
-                        config: handoffConfig,
-                        charId: char.id,
-                        sharedMessages: previous?.charId === char.id ? previous.messages : [],
-                        localMessages: [],
-                        previousRevision: previous?.revision,
-                        allowEmptyMessages: true,
-                    });
+                    const context = await initializeHandoffCharacter(handoffConfig, char.id);
+                    if (context.charId !== char.id) handoffError = '云端接力属于其他角色，请在“同步上下文”中主动发布当前角色';
                 } catch (error: any) {
                     handoffError = error?.message || '未知错误';
                 }
             }
             const summary = `${force ? '全量覆盖' : '补传'}完成：${result.synced} 条上传、${result.skipped} 条云端已有跳过、${result.failed} 条失败${orphaned ? `，${orphaned} 条缺少本地记忆正文未上传` : ''}`;
-            setRvSyncStatus(handoffError ? `${summary}；角色 ID 未发布：${handoffError}` : `${summary}；当前角色 ID 已发布给 Lite`);
+            setRvSyncStatus(handoffError ? `${summary}；角色 ID 未发布：${handoffError}` : `${summary}；角色 ID 已就绪，迁移对话请点“同步上下文”`);
             addToast(summary, result.failed > 0 || orphaned > 0 || handoffError ? 'error' : 'success');
         } catch (e: any) {
             setRvSyncStatus(`同步失败：${e.message}`);
@@ -3191,6 +3186,7 @@ export default function MemoryPalaceApp() {
         const backLabel = isGlobal ? '← 返回选择角色' : '← 返回宫殿';
         return (
             <div data-guide={guideSetup ? 'memory-apis' : undefined} style={{ paddingLeft: 16, paddingRight: 16, paddingBottom: 16, paddingTop: guideSetup ? 16 : SAFE_PAD_TOP, maxHeight: '100%', overflowY: 'auto' }}>
+                {char && <RecentContextHandoffModal isOpen={handoffOpen} onClose={() => setHandoffOpen(false)} character={char} userName={userProfile?.name || 'TA'} remoteVectorConfig={remoteVectorConfig} onImported={() => {}} />}
                 {!guideSetup && <>
                 <div
                     onClick={() => setView(backTarget)}
@@ -3915,6 +3911,7 @@ create table if not exists memory_vectors (
                         <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>只保存在当前浏览器配置中</div>
                     </div>
 
+                    {char && <button type="button" onClick={() => setHandoffOpen(true)} style={{ width: '100%', marginTop: 12, padding: '12px 0', borderRadius: 12, border: '1px solid #a7f3d0', background: '#ecfdf5', color: '#047857', fontWeight: 700 }}>同步上下文 · 角色总结与预览</button>}
                     {/* 测试 + 保存 */}
                     <button onClick={handleTestRemoteVector} disabled={rvTesting || !rvUrl || !rvKey}
                         style={{

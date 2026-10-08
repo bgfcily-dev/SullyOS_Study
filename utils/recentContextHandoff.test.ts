@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildReceivedHandoff, fetchSharedContext, handoffSummaryInstructions, parseSharedContextRow, publishSharedContext, receiveHandoffMessages, type HandoffMessage } from './recentContextHandoff';
+import { buildReceivedHandoff, fetchSharedContext, handoffSummaryInstructions, initializeHandoffCharacter, parseSharedContextRow, publishSharedContext, receiveHandoffMessages, type HandoffMessage } from './recentContextHandoff';
 import { isMessageSemanticallyRelevant } from './messageFormat';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -59,9 +59,21 @@ describe('device relay envelope', () => {
   });
 
   it('uses device local migration time and excludes handoff notices from memory extraction', () => {
-    expect(handoffSummaryInstructions(new Date(2026, 9, 8, 15, 30))).toContain('2026年10月8日15时30分');
+    const instructions = handoffSummaryInstructions(new Date(2026, 9, 8, 15, 30), '小树');
+    expect(instructions).toContain('2026年10月8日15时30分');
+    expect(instructions).toContain('以角色「小树」的第一人称');
+    expect(instructions).not.toContain('使用用户第一人称');
     for (const source of ['handoff_receive', 'handoff_upload']) {
       expect(isMessageSemanticallyRelevant({ id: 1, charId: 'c', role: 'system', type: 'text', content: summary, timestamp: 1000, metadata: { source } })).toBe(false);
     }
+  });
+  it('does not strip the summary or replace the source label when vector synchronization prepares the character ID', async () => {
+    const fetchMock = vi.fn(async () => Response.json([{ char_id: 'c', messages: conversation, prompt: summary, source_device_id: 'a', source_device_name: '设备 A' }]));
+    vi.stubGlobal('fetch', fetchMock);
+    const context = await initializeHandoffCharacter({ ...config, deviceId: 'main-memory-palace', deviceName: '原版记忆宫殿' }, 'c');
+    expect(context.prompt).toBe(summary);
+    expect(context.sourceDeviceName).toBe('设备 A');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0][1].method).toBeUndefined();
   });
 });

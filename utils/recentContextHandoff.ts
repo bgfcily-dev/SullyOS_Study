@@ -137,10 +137,10 @@ export function receiveHandoffMessages(context: SharedRecentContext, config: Han
   return mergeHandoffMessages([], [marker, ...context.messages.filter(m => m.role !== 'system'), ...local], 100);
 }
 
-export function handoffSummaryInstructions(at = new Date()): string {
-  // This is the user's device migration time, deliberately in device local time.
+export function handoffSummaryInstructions(at = new Date(), characterName = '角色'): string {
+  // Callers with character time zones pass the character's wall clock.
   const time = `${at.getFullYear()}年${at.getMonth() + 1}月${at.getDate()}日${at.getHours()}时${at.getMinutes()}分`;
-  return `请根据最近对话写一段简短的跨设备迁移总结，使用用户第一人称，约80–150字，不虚构事实。以“现在是${time}，我刚才在”开头，说明刚才在做什么、聊到哪里及尚未完成的事，以“接下来要进行迁移。”结尾。只输出总结正文，不写分析。这是临时接力上下文，不是长期记忆。`;
+  return `请以角色「${characterName}」的第一人称写一段简短的跨设备迁移总结，约80–150字，不虚构事实。“我”始终指角色本人，不是用户；assistant 消息是你说的话，user 消息是对方说的话，不要把对方的活动、感受或经历写成自己的。以“现在是${time}，我刚才在”开头，说明你刚才在做什么、与对方聊到哪里及尚未完成的事，以“接下来我要迁移到另一台设备继续对话。”结尾。只输出角色的总结正文，不写分析。这是临时接力上下文，不是长期记忆。`;
 }
 
 export async function generateHandoffSummary(api: { baseUrl: string; apiKey: string; model: string }, messages: Array<{ role: string; content: unknown }>): Promise<string> {
@@ -217,6 +217,13 @@ export async function fetchSharedContext(config: HandoffCloudConfig): Promise<Sh
 export async function testSharedContextConnection(config: HandoffCloudConfig): Promise<string> {
   const context = await fetchSharedContext(config);
   return context ? `连接成功，已发布来自 ${context.sourceDeviceName || '未命名设备'}` : '连接成功，目前还没有同步过上下文';
+}
+
+/** Vector synchronization must never republish or strip a user's handoff summary. */
+export async function initializeHandoffCharacter(config: HandoffCloudConfig, charId: string): Promise<SharedRecentContext> {
+  const existing = await fetchSharedContext(config);
+  if (existing) return existing;
+  return publishSharedContext({ config, charId, sharedMessages: [], localMessages: [], allowEmptyMessages: true });
 }
 
 export async function publishSharedContext(input: {
