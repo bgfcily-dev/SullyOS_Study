@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
   origin TEXT,
   archived INTEGER NOT NULL DEFAULT 0,
   is_summary INTEGER NOT NULL DEFAULT 0,
-  event_box_id TEXT
+  event_box_id TEXT,
+  metadata_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_vectors_char ON memory_vectors(char_id);

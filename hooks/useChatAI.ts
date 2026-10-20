@@ -13,6 +13,7 @@ import { ChatParser } from '../utils/chatParser';
 // 思考链 / HTML / MCD / memoryPalace 注入已下沉到 chatRequestPayload；这里不再直接调用
 import { useMusic, loadMusicHooks } from '../context/MusicContext';
 import { processNewMessagesWithAutoArchive } from '../utils/memoryPalace/autoArchive';
+import { queueMemoryChangesAfterReply, stageInstantMemoryCheck } from '../utils/memoryPalace/confirmedChanges';
 import { incrementDigestRound, runCognitiveDigestion, detectPersonalityStyle } from '../utils/memoryPalace';
 // evolveFlowNarrative 保留为低频深刷新备用，日常意识流由副 API 的情绪评估同轮产出（innerState 字段）
 // import { evolveFlowNarrative } from '../utils/scheduleGenerator';
@@ -669,6 +670,7 @@ export const useChatAI = ({
         // 这一轮走的是即时对话、并且云端已经受理：收尾时不要再打脏重传一次 fire_pack。
         // POST 上去的那份就是权威的（还多带了 chat 段），再传一遍是同样内容白走一趟网络。
         let instantChatAccepted = false;
+        const memoryCheckSince = Date.now();
         // amsg2 工具在三个工具循环（麦当劳 / 瑞幸 / 通用）里都可能出现，执行方式完全一样，
         // 只有各自的 loopMessages 不同。
         const runAmsg2ToolCall = async (
@@ -1299,6 +1301,7 @@ export const useChatAI = ({
                     ...(amsgSarSnapshot ? { sarModule: amsgSarSnapshot } : {}),
                 }));
                 if (instantChatResult.ok) {
+                    if (char.memoryPalaceEnabled && instantChatResult.uuid) stageInstantMemoryCheck(char.id, instantChatResult.uuid, contextMsgs, memoryCheckSince);
                     // 这次 POST 已经把权威的那份 fire_pack 传上去了，收尾不必再打脏重传一遍。
                     instantChatAccepted = true;
                     // 202 只说明云端收下了，不说明角色真的读到过这些回执：那一轮可能空输出被
@@ -2128,6 +2131,10 @@ export const useChatAI = ({
             // 对它已失效）会重新 reloadMessages；用户不在该会话时补未读 + toast。
             // 即时对话路径不发：它的落库回落走 'active-msg-received'（activeMsgRuntime）。
             announceChatGen(CHAT_GEN_EVENTS.replyArrived, { charId: char.id, charName: char.name });
+            if (char.memoryPalaceEnabled && memoryPalaceConfig?.lightLLM) {
+                const lastAssistantIndex = contextMsgs.map(message => message.role).lastIndexOf('assistant');
+                void queueMemoryChangesAfterReply(char.id, contextMsgs.slice(lastAssistantIndex + 1), memoryPalaceConfig.lightLLM, memoryCheckSince).catch(error => addToast(`记忆建议检查未完成：${error.message}`, 'info'));
+            }
 
             // 防穿帮闸：仅当这轮请求真的成功、回执确实进了模型上下文并产出已落库的
             // 回复，才标记已告知；失败/中断路径不标，下轮重新注入（回执不丢）。

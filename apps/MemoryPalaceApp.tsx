@@ -1,4 +1,7 @@
 import MemoryMaintenancePanel from '../components/chat/MemoryMaintenancePanel';
+import MemoryChangeReview from '../components/chat/MemoryChangeReview';
+import { mirrorConfirmedMemoryChanges } from '../utils/memoryPalace/confirmedChanges';
+import { getEmbedding } from '../utils/memoryPalace/embedding';
 import RecentContextHandoffModal from '../components/chat/RecentContextHandoffModal';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
 import { MemoryTimeText } from '../components/MemoryTimeText';
@@ -669,7 +672,11 @@ export default function MemoryPalaceApp() {
     const char = characters.find(c => c.id === activeCharacterId);
     const [selectGroupId, setSelectGroupId] = useState(GROUP_FILTER_ALL); // 选角色页的分组筛选
 
-    const [view, setView] = useState<'picker' | 'palace' | 'room' | 'memory' | 'settings' | 'globalSettings' | 'all' | 'boxes'>(() => guideStep === 1 ? 'globalSettings' : 'picker');
+    const [view, setView] = useState<'picker' | 'palace' | 'room' | 'memory' | 'settings' | 'globalSettings' | 'all' | 'boxes'>(() => {
+        if (guideStep === 1) return 'globalSettings';
+        try { if (sessionStorage.getItem('memory-change-review-char') === activeCharacterId) { sessionStorage.removeItem('memory-change-review-char'); return 'palace'; } } catch { /* optional */ }
+        return 'picker';
+    });
     useEffect(() => {
         const reveal = () => {
             if (guideStep === 1) setView('globalSettings');
@@ -5123,7 +5130,12 @@ create table if not exists memory_vectors (
                         </div>
                     </div>
 
-                    {/* 全局搜索 */}
+                {remoteVectorConfig.enabled && remoteVectorConfig.initialized && <MemoryChangeReview cloud={remoteVectorConfig} charId={char.id} model={memoryPalaceConfig.embedding.model} embed={async text => {
+                    const config = memoryPalaceConfig.embedding;
+                    if (!config.baseUrl || !config.apiKey || !config.model) throw new Error('请先配置完整的 Embedding API');
+                    return Array.from(await getEmbedding(text, config));
+                }} onApplied={async records => { await mirrorConfirmedMemoryChanges(records); await loadStats(); }} />}
+                {/* 全局搜索 */}
                     <div style={{ marginTop: 12, textAlign: 'left', position: 'relative' }}>
                         <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', display: 'inline-flex', pointerEvents: 'none' }}>
                             <Icon name="search" size={14} />

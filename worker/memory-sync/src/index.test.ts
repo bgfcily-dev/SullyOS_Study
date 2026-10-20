@@ -40,7 +40,7 @@ describe('memory-sync access control', () => {
       DB: {
         prepare(query: string) {
           queries.push(query);
-          return {} as ReturnType<Env['DB']['prepare']>;
+          return { all: async () => ({ results: [{ name: 'metadata_json' }] }) } as ReturnType<Env['DB']['prepare']>;
         },
         batch,
         exec: vi.fn(async () => ({})),
@@ -54,8 +54,8 @@ describe('memory-sync access control', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(batch).toHaveBeenCalledOnce();
-    expect(queries).toHaveLength(6);
+    expect(batch).toHaveBeenCalledTimes(2);
+    expect(queries).toHaveLength(18);
     expect(queries[0]).toContain('\n');
     expect(env.DB.exec).not.toHaveBeenCalled();
   });

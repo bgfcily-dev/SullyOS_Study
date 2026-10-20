@@ -122,6 +122,7 @@ export async function vectorSearch(
                         id: r.memoryId,
                         charId,
                         content: r.content,
+                        metadata: r.metadata,
                         room: r.room as any,
                         tags: r.tags,
                         importance: r.importance,

@@ -8,6 +8,15 @@
  */
 
 import type { RemoteVectorConfig, MemoryNode } from './types';
+import { readMemoryMetadata, type MemoryMetadata } from './metadata';
+
+export function metadataEnabled(config: RemoteVectorConfig): boolean {
+    try { return new URL(config.supabaseUrl).hostname.endsWith('.workers.dev'); } catch { return false; }
+}
+
+function selectMetadata(config: RemoteVectorConfig): string {
+    return metadataEnabled(config) ? ',metadata' : '';
+}
 
 // ─── 初始化 SQL（用户需在 Supabase SQL Editor 运行一次） ──
 
@@ -219,6 +228,7 @@ export async function upsertVector(
             memory_id: memoryId,
             char_id: charId,
             content: node.content,
+            ...(metadataEnabled(config) && node.metadata ? { metadata: node.metadata } : {}),
             vector: `[${vecArray.join(',')}]`,
             dimensions,
             model: model || null,
@@ -277,6 +287,7 @@ export async function upsertVectorBatch(
                 memory_id: item.memoryId,
                 char_id: item.charId,
                 content: item.node.content,
+                ...(metadataEnabled(config) && item.node.metadata ? { metadata: item.node.metadata } : {}),
                 vector: `[${vecArray.join(',')}]`,
                 dimensions: item.dimensions,
                 model: item.model || null,
@@ -348,6 +359,7 @@ export async function searchVectors(
     archived: boolean;
     isSummary: boolean;
     eventBoxId: string | null;
+    metadata?: MemoryMetadata;
 }[]> {
     const vecArray = vectorToWireArray(queryVector);
 
@@ -370,6 +382,7 @@ export async function searchVectors(
     return (data || []).map((row: any) => ({
         memoryId: row.memory_id,
         content: row.content,
+        metadata: readMemoryMetadata(row.metadata),
         similarity: row.similarity,
         room: row.room,
         importance: row.importance,
@@ -404,7 +417,7 @@ export async function fetchRemoteByRoom(
 ): Promise<MemoryNode[]> {
     try {
         const params = new URLSearchParams({
-            select: 'memory_id,char_id,content,room,importance,tags,mood,valence,arousal,created_at,last_accessed_at,access_count,pinned_until,source_id,origin,archived,is_summary,event_box_id',
+            select: 'memory_id,char_id,content,room,importance,tags,mood,valence,arousal,created_at,last_accessed_at,access_count,pinned_until,source_id,origin,archived,is_summary,event_box_id' + selectMetadata(config),
             char_id: `eq.${charId}`,
             room: `eq.${room}`,
             archived: 'eq.false',
@@ -420,6 +433,7 @@ export async function fetchRemoteByRoom(
             id: row.memory_id,
             charId: row.char_id,
             content: row.content || '',
+            metadata: readMemoryMetadata(row.metadata),
             room: row.room,
             tags: row.tags || [],
             importance: row.importance ?? 5,
@@ -566,7 +580,7 @@ export async function fetchRemoteVectorsForCharacter(
     let invalid = 0;
     while (true) {
         const params = new URLSearchParams({
-            select: 'memory_id,char_id,content,vector,dimensions,model,room,importance,tags,mood,valence,arousal,created_at,last_accessed_at,access_count,pinned_until,source_id,origin,archived,is_summary,event_box_id',
+            select: 'memory_id,char_id,content,vector,dimensions,model,room,importance,tags,mood,valence,arousal,created_at,last_accessed_at,access_count,pinned_until,source_id,origin,archived,is_summary,event_box_id' + selectMetadata(config),
             char_id: `eq.${cleanCharId}`,
             order: 'memory_id.asc',
             limit: String(pageSize),
@@ -590,6 +604,7 @@ export async function fetchRemoteVectorsForCharacter(
                     id: memoryId,
                     charId: cleanCharId,
                     content: String(row.content || ''),
+                    metadata: readMemoryMetadata(row.metadata),
                     room: room as MemoryNode['room'],
                     tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
                     importance: Math.max(1, Math.min(10, Number(row.importance) || 5)),

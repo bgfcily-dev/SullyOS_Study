@@ -1,7 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getVectorCount, parseRemoteVector, syncLocalToRemote } from './supabaseVector';
+import { getVectorCount, parseRemoteVector, syncLocalToRemote, upsertVector, searchVectors, fetchRemoteVectorsForCharacter } from './supabaseVector';
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe('Cloudflare memory metadata transport', () => {
+    const config = { enabled: true, initialized: true, supabaseUrl: 'https://memory-sync.example.workers.dev', supabaseAnonKey: 'test' };
+    const metadata = { kind: 'identity' as const, status: 'active', future: { key: true } };
+    it('sends metadata to CF without requiring old Supabase installations to add a column', async () => {
+        const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const node = { id: 'm', charId: 'c', content: '迁移', room: 'self_room' as const, importance: 5, tags: [], mood: 'neutral', createdAt: 1, lastAccessedAt: 1, accessCount: 0, embedded: true, metadata };
+        await upsertVector(config, 'm', 'c', [1, 0], node, 2);
+        expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).metadata).toEqual(metadata);
+        await upsertVector({ ...config, supabaseUrl: 'https://old.supabase.co' }, 'm', 'c', [1, 0], node, 2);
+        expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).not.toHaveProperty('metadata');
+    });
+    it('retains metadata in recall and downloaded local snapshots', async () => {
+        const row = { memory_id: 'm', char_id: 'c', content: '迁移', room: 'self_room', vector: '[1,0]', dimensions: 2, metadata };
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify([row])));
+        vi.stubGlobal('fetch', fetchMock);
+        expect((await searchVectors(config, [1, 0], 'c'))[0].metadata).toEqual(metadata);
+        const onBatch = vi.fn();
+        await fetchRemoteVectorsForCharacter(config, 'c', onBatch);
+        expect(onBatch.mock.calls[0][0][0].node.metadata).toEqual(metadata);
+    });
+});
 
 describe('remote vector decoding', () => {
     it('decodes pgvector text returned by PostgREST', () => {

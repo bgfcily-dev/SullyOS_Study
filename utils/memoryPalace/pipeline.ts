@@ -1,4 +1,7 @@
 import { readMaintenanceSettings } from './maintenanceMode';
+import { memoryEventDate } from './eventDate';
+import { areEventBoxesDisabled } from './eventBoxPolicy';
+import { recallReviewedMemories } from './reviewedRecall';
 import { loadRangeMessageContents } from './rangeMessagePage';
 import { loadCharacterContextMessages } from '../chatContextRange';
 /**
@@ -143,7 +146,7 @@ export interface LightLLMConfig {
 // ─── 日期区间记忆加载 ────────────────────────────────
 
 /**
- * 按 createdAt 区间从本地取记忆节点。
+ * 按事件日期区间从本地取记忆节点（不使用入库日期）。
  * - 过滤当前 charId、仅 embedded、非 summary
  * - archived 节点也参与匹配（它们保留原事件的 createdAt）；命中后路由到其 EventBox 的 summary
  * - 每个 range 最多返回 5 条，整体去重
@@ -157,7 +160,15 @@ async function loadMemoriesByDateRanges(
     const out: import('./types').MemoryNode[] = [];
     const seen = new Set<string>();
     for (const range of ranges) {
-        const inRange = all.filter(n => n.createdAt >= range.start && n.createdAt < range.end && n.embedded !== false);
+        const inRange = all.filter(n => {
+            const date = memoryEventDate(n);
+            if (!date || n.embedded === false) return false;
+            const [year, month, day] = date.split('-').map(Number);
+            const start = new Date(year, (month || 1) - 1, day || 1).getTime();
+            const end = day ? new Date(year, month - 1, day + 1).getTime()
+                : month ? new Date(year, month, 1).getTime() : new Date(year + 1, 0, 1).getTime();
+            return start >= range.start && end <= range.end;
+        });
         const sorted = inRange.sort((a, b) => b.importance - a.importance).slice(0, 5);
         for (const n of sorted) {
             // archived 节点 → 路由到其 box 的 summary（如果有）
@@ -405,6 +416,11 @@ export async function retrieveMemories(
     let explicitEntityTelemetry: RecallRetrievalTelemetry['explicitEntity'];
     let eventBoxMetadataTelemetry: RecallRetrievalTelemetry['eventBoxMetadata'];
     try {
+        if (await areEventBoxesDisabled(charId, remoteVectorConfig)) {
+            const formatted = await recallReviewedMemories(recentMessages, charId, embeddingConfig, remoteVectorConfig, queryOverride);
+            onTelemetry?.({ outcome: formatted ? 'success' : 'empty', reason: formatted ? undefined : 'no_results' });
+            return formatted;
+        }
         // 1. 构建查询 —— per-message 多路检索策略：
         //
         //    问题：任何形式的"把多条 user 消息 join 成一段 embedding"都会出现
@@ -943,7 +959,7 @@ export async function retrieveMemories(
         }
 
         // 2.6 日期引用路径：从 user 意图里抽"去年12月""3月4号""上周"这类
-        //     日期引用，直接按 createdAt 捞对应区间的记忆（vector/BM25 都对不准日期）。
+        //     日期引用，直接按事件日期捞对应区间的记忆（vector/BM25 都对不准日期）。
         //     archived 节点参与日期匹配 → 路由到其 EventBox summary 返回。
         const dateT0 = performance.now();
         try {
@@ -1378,8 +1394,13 @@ export async function injectMemoryPalace(
         const roomPlatesStartedAt = performance.now();
         let roomPlateOutcome: RecallTraceStage['outcome'] = 'ok';
         try {
-            const { buildRoomPlatesInjection } = await import('./roomPlates');
-            char.roomPlatesInjection = await buildRoomPlatesInjection(char.id, resolvedUserName);
+            if (await areEventBoxesDisabled(char.id, getRemoteVectorConfig())) {
+                char.roomPlatesInjection = '';
+                roomPlateOutcome = 'skipped';
+            } else {
+                const { buildRoomPlatesInjection } = await import('./roomPlates');
+                char.roomPlatesInjection = await buildRoomPlatesInjection(char.id, resolvedUserName);
+            }
         } catch {
             char.roomPlatesInjection = '';
             roomPlateOutcome = 'error';
@@ -1894,7 +1915,7 @@ async function extractAndStoreMemories(
         }
 
         // 所有需要保留的批次均提取成功后再摘除便利贴；严格模式下避免半成功副作用。
-        for (const unpinId of allUnpinIds) {
+        for (const unpinId of await areEventBoxesDisabled(charId) ? [] : allUnpinIds) {
             const node = allCharNodes.find(n => n.id === unpinId);
             if (node) {
                 node.pinnedUntil = null;
@@ -1960,6 +1981,7 @@ async function applyMemorySideEffects(
     llmConfig: LightLLMConfig,
     userName: string,
 ): Promise<void> {
+        if (await areEventBoxesDisabled(charId)) return;
         // 10. 建关联（仅规则，不调 LLM，省钱）— 失败不影响已保存的记忆
         try {
             const existingNodes = await MemoryNodeDB.getByCharId(charId);

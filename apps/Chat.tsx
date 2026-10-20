@@ -51,6 +51,7 @@ import ConfirmDialog from '../components/os/ConfirmDialog';
 import { loadChatInputPreferences, saveChatInputPreferences } from '../utils/chatInputPreferences';
 import InstantChatRouteNotice from '../components/chat/InstantChatRouteNotice';
 import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
+import { MemoryChangeNotice } from '../components/chat/MemoryChangeReview';
 import FavoritesPortal from '../components/chat/VoiceFavoritesPortal';
 import ChatModals from '../components/chat/ChatModals';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
@@ -3623,6 +3624,9 @@ const Chat: React.FC = () => {
                 }
              `}</style>}
 
+             {char.memoryPalaceEnabled && remoteVectorConfig?.enabled && remoteVectorConfig.initialized && <div className="absolute top-[80px] left-3 right-3 z-[145]">
+                 <MemoryChangeNotice cloud={remoteVectorConfig} charId={char.id} onOpen={() => { try { sessionStorage.setItem('memory-change-review-char', char.id); } catch {} openApp(AppID.MemoryPalace); }} />
+             </div>}
              {/* 记忆整理中 — 顶部浮动胶囊（不阻塞交互，轻量无 backdrop-filter） */}
              {memoryPalaceStatus && (
                  <div

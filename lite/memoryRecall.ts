@@ -1,3 +1,5 @@
+import { fetchEventDateMemories, queryEventDates } from '../utils/memoryPalace/eventDate';
+import { asksIdentityHistory, resolveMemoryState } from './memoryState';
 import { getEmbedding } from '../utils/memoryPalace/embedding';
 import { searchVectors } from '../utils/memoryPalace/supabaseVector';
 import type { LiteCloudConfig, LiteEmbeddingConfig, LiteMemoryRecall, LiteMessage } from './types';
@@ -36,13 +38,25 @@ export async function recallLiteMemories(input: {
     supabaseUrl: cloud.supabaseUrl,
     supabaseAnonKey: cloud.supabaseAnonKey,
     initialized: true,
-  }, vector, charId, 0.3, 8);
+  }, vector, charId, 0.3, 24);
 
-  return rows.map((row) => ({
+  const candidates = rows.map((row) => ({
     memoryId: row.memoryId,
     content: row.content,
     room: row.room,
     importance: row.importance,
     similarity: row.similarity,
+    metadata: row.metadata,
+    archived: row.archived,
+    isSummary: row.isSummary,
   }));
+  const dateRows = await fetchEventDateMemories(cloud, charId, queryEventDates(messages.filter(message => message.role === 'user').at(-1)?.content || ''));
+  for (const row of dateRows.reverse()) {
+    const index = candidates.findIndex(item => item.memoryId === row.memory_id);
+    if (index >= 0) candidates.splice(index, 1);
+    candidates.unshift({ memoryId: row.memory_id, content: row.content, room: row.room,
+      importance: row.importance, similarity: 1, metadata: row.metadata, archived: !!row.archived, isSummary: !!row.is_summary });
+  }
+  candidates.splice(24);
+  return resolveMemoryState(candidates, cloud, charId, asksIdentityHistory(messages.filter(message => message.role === 'user').at(-1)?.content || ''));
 }

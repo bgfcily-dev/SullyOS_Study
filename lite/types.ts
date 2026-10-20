@@ -1,3 +1,4 @@
+import type { MemoryMetadata } from '../utils/memoryPalace/metadata';
 import type { HandoffCloudConfig, HandoffMessage, SharedRecentContext as HandoffContext } from '../utils/recentContextHandoff';
 
 export type LiteMessage = HandoffMessage;
@@ -39,6 +40,7 @@ export interface LiteEmbeddingConfig {
 }
 
 export interface LiteMemoryDraft {
+  metadata?: MemoryMetadata;
   content: string;
   room: 'living_room' | 'bedroom' | 'study' | 'user_room' | 'self_room' | 'attic' | 'windowsill';
   importance: number;
@@ -60,6 +62,7 @@ export interface LiteSticker {
 }
 
 export interface LiteMemoryRecall {
+  metadata?: MemoryMetadata;
   memoryId: string;
   content: string;
   room: string;
@@ -75,6 +78,7 @@ export interface LiteVectorStats {
 }
 
 export interface LiteSyncedMemory {
+  metadata?: MemoryMetadata;
   memoryId: string;
   charId: string;
   content: string;

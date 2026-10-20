@@ -24,6 +24,7 @@
  */
 
 import { readMaintenanceSettings } from './maintenanceMode';
+import { areEventBoxesDisabled } from './eventBoxPolicy';
 import type { MemoryNode, Anticipation, PersonalityStyle, EmbeddingConfig, RemoteVectorConfig, PlateRoom, DigestReport, DigestReportSection } from './types';
 import { PLATE_TITLES } from './types';
 import type { LightLLMConfig } from './pipeline';
@@ -851,6 +852,10 @@ export async function runCognitiveDigestion(
     /** 阶段回调：LLM 调用链较长（审视→回填→整理），让前端能实时告诉用户别走开 */
     onProgress?: (stage: string) => void,
 ): Promise<DigestResult | null> {
+    if (await areEventBoxesDisabled(charId)) {
+        if (manualTrigger) throw new Error('新的记忆流程通过待确认建议更新，已停用旧版认知消化');
+        return null;
+    }
     if (!manualTrigger && readMaintenanceSettings().enabled) return null;
     const trigger: 'auto' | 'manual' = manualTrigger ? 'manual' : 'auto';
 

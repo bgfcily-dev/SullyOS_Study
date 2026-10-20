@@ -53,6 +53,22 @@ async function seedChar(charId: string) {
 }
 
 describe('记忆宫殿导出 / 导入', () => {
+    it('remaps event/reflection metadata links during import', async () => {
+        const source = 'metadata-export-source';
+        await MemoryNodeDB.saveMany([
+            makeNode('meta-event', source, { metadata: { kind: 'event', current_reflection_id: 'meta-reflection', future: true } }),
+            makeNode('meta-reflection', source, { metadata: { kind: 'reflection', event_id: 'meta-event', confidence: 0.45 } }),
+        ]);
+        const file = await exportMemoryPalace([{ id: source, name: '角色' }], { includeVectors: false });
+        await importMemoryPalace(file, 'metadata-export-target');
+        const nodes = await MemoryNodeDB.getByCharId('metadata-export-target');
+        const event = nodes.find(node => node.metadata?.kind === 'event')!;
+        const reflection = nodes.find(node => node.metadata?.kind === 'reflection')!;
+        expect(event.metadata?.current_reflection_id).toBe(reflection.id);
+        expect(reflection.metadata?.event_id).toBe(event.id);
+        expect(event.metadata?.future).toBe(true);
+        expect(reflection.metadata?.confidence).toBe(0.45);
+    });
     it('带向量导出后再导入到新角色：内容、向量、事件盒引用都自洽', async () => {
         const src = 'char_src_1';
         await seedChar(src);

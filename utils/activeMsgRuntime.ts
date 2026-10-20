@@ -1835,6 +1835,8 @@ const flushInboxToChatImpl = async (trigger: FlushTrigger, charId?: string): Pro
         const isLastSegment = !Number.isFinite(segTotal) || segTotal <= 1
           || (Number.isFinite(segIndex) && segIndex >= segTotal);
         if (isLastSegment && clearInstantChatPending(message.charId)) {
+          // Only this requested round's committed reply is new evidence; proposals still need review.
+          void import('./memoryPalace/confirmedChanges').then(module => module.checkLandedInstantMemories(message.charId, pendingForChar.uuid)).catch(error => log.warn('记忆修改建议检查未完成（回复已落库）', { error }));
           scheduleNextInstantChatStatusCheck();
           // 「API 调用记录」里那笔（发出去时记的）在这里补完：用量挂在末条推送上，
           // 而这里正好是认末段的地方。

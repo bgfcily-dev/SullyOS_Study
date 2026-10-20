@@ -16,6 +16,7 @@ import type { EventBox, MemoryNode } from './types';
 import { EVENT_BOX_LIVE_HARD_CAP } from './types';
 import type { EventBoxHint } from './extraction';
 import { EventBoxDB, MemoryNodeDB } from './db';
+import { areEventBoxesDisabled } from './eventBoxPolicy';
 
 // ─── ID 生成 ───────────────────────────────────────────
 
@@ -158,6 +159,7 @@ export async function bindMemoriesIntoEventBox(
     hints: EventBoxHint[],
 ): Promise<Set<string>> {
     const touched = new Set<string>();
+    if (await areEventBoxesDisabled(charId)) return touched;
     if (links.length === 0) return touched;
 
     // 按 newMemoryId 分组
@@ -251,6 +253,7 @@ export async function manuallyBindMemories(
     name?: string,
     tags?: string[],
 ): Promise<EventBox | null> {
+    if (await areEventBoxesDisabled(charId)) throw new Error('这个角色已停用事件盒，记忆将保持独立');
     const touched = await bindMemoriesIntoEventBox(
         charId,
         [{ newMemoryId: idA, existingMemoryId: idB }],

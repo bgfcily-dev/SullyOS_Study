@@ -24,6 +24,7 @@ import {
     EVENT_BOX_SUMMARY_HARD_MAX_CHARS,
 } from './types';
 import { EventBoxDB, MemoryNodeDB } from './db';
+import { areEventBoxesDisabled } from './eventBoxPolicy';
 import type { LightLLMConfig } from './pipeline';
 import { vectorizeAndStore } from './vectorStore';
 import { bulkSetArchived } from './supabaseVector';
@@ -519,6 +520,7 @@ async function regenerateEventBoxSummaryUnlocked(
 ): Promise<RegenerateEventBoxSummaryResult> {
     const box = await EventBoxDB.getById(boxId);
     if (!box) throw new Error('这个事件盒已经不存在了');
+    if (await areEventBoxesDisabled(box.charId, remoteVectorConfig)) throw new Error('这个角色已停用事件盒，旧总结仅作备份');
 
     const sourceIds = [...new Set([
         ...box.archivedMemoryIds,
@@ -647,7 +649,7 @@ export async function maybeCompressEventBoxes(
         try {
             const ok = await withEventBoxCompressionLock(id, async () => {
                 const box = await EventBoxDB.getById(id);
-                if (!box || box.liveMemoryIds.length < EVENT_BOX_COMPRESSION_THRESHOLD) return false;
+                if (!box || box.liveMemoryIds.length < EVENT_BOX_COMPRESSION_THRESHOLD || await areEventBoxesDisabled(box.charId)) return false;
                 return compressEventBox(box, llmConfig, embeddingConfig, charName, userName);
             });
             if (ok) compressed++;

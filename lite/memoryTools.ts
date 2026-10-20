@@ -1,5 +1,6 @@
+import { buildNewMemoryMetadata, readMemoryMetadata, NEW_MEMORY_METADATA_RULES } from '../utils/memoryPalace/metadata';
 import { getEmbedding, getEmbeddings } from '../utils/memoryPalace/embedding';
-import { getVectorCount, testConnection, upsertVector, upsertVectorBatch } from '../utils/memoryPalace/supabaseVector';
+import { getVectorCount, metadataEnabled, testConnection, upsertVector, upsertVectorBatch } from '../utils/memoryPalace/supabaseVector';
 import type { MemoryNode, MemoryRoom, RemoteVectorConfig } from '../utils/memoryPalace/types';
 import { extractLiteText, liteChatUrl } from './chatApi';
 import { buildLiteRoleContext, LITE_MEMORY_EXTRACTION_RULES } from './prompts';
@@ -49,6 +50,7 @@ export function parseLiteSyncedMemoryRows(value: unknown): LiteSyncedMemory[] {
     memories.push({
       memoryId,
       charId,
+      metadata: readMemoryMetadata(row.metadata),
       content,
       room: VALID_ROOMS.has(row.room as MemoryRoom) ? row.room as MemoryRoom : 'living_room',
       importance: Math.max(1, Math.min(10, Math.round(finiteNumber(row.importance, 5)))),
@@ -73,7 +75,7 @@ export async function fetchLiteSyncedMemories(cloud: LiteCloudConfig, charId: st
   const memories: LiteSyncedMemory[] = [];
   for (let offset = 0; offset < 5000; offset += pageSize) {
     const query = new URLSearchParams({
-      select: 'memory_id,char_id,content,dimensions,model,room,importance,tags,mood,created_at,last_accessed_at,access_count,archived',
+      select: 'memory_id,char_id,content,dimensions,model,room,importance,tags,mood,created_at,last_accessed_at,access_count,archived' + (metadataEnabled(remoteConfig(cloud)) ? ',metadata' : ''),
       char_id: `eq.${cleanCharId}`,
       memory_id: 'like.lite_ctx_*',
       order: 'created_at.desc',
@@ -129,6 +131,7 @@ export async function updateLiteSyncedMemory(input: {
       id: next.memoryId,
       charId: next.charId,
       content: next.content,
+      metadata: next.metadata,
       room: next.room,
       tags: next.tags,
       importance: next.importance,
@@ -215,9 +218,10 @@ export function parseLiteMemoryDrafts(raw: string): LiteMemoryDraft[] {
     const tags = Array.isArray(item.tags)
       ? item.tags.filter((tag): tag is string => typeof tag === 'string').map((tag) => tag.trim()).filter(Boolean).slice(0, 5)
       : [];
-    drafts.push({ content, room, importance, mood, tags });
+    drafts.push({ content, room, importance, mood, tags, metadata: readMemoryMetadata(item.metadata) });
   }
-  return drafts;
+  const metadata = buildNewMemoryMetadata(drafts, drafts.map((_, index) => `N${index}`));
+  return drafts.map((draft, index) => ({ ...draft, metadata: metadata[index], mood: metadata[index].kind === 'reflection' ? draft.mood : 'neutral' }));
 }
 
 const stableHash = (value: string): string => {
@@ -276,12 +280,13 @@ export async function prepareLiteContextMemories(input: {
   const systemPrompt = `${buildLiteRoleContext(identity)}
 
 ${LITE_MEMORY_EXTRACTION_RULES}
+${NEW_MEMORY_METADATA_RULES}
 请用角色第一人称“我”记录，对用户直接用用户名称呼。
 一个话题通常提取 1–5 条，琐碎内容不必记录，最多 8 条。
 房间只能是：living_room（日常）、bedroom（亲密关系）、study（工作学习）、user_room（用户资料与人际）、self_room（角色自我）、attic（未解决困惑伤害）、windowsill（期盼与目标）。
 ${customPrompt ? `用户补充的整理要求：\n${customPrompt}` : ''}
 只输出 JSON 数组，不要 Markdown：
-[{"content":"记忆正文","room":"living_room","importance":5,"mood":"neutral","tags":["标签"]}]`;
+[{"content":"事实正文","room":"living_room","importance":5,"mood":"neutral","tags":["标签"],"metadata":{"kind":"event"}}]`;
 
   let response: Response;
   try {
@@ -328,12 +333,15 @@ export async function uploadPreparedLiteMemories(input: {
   if (vectors.length !== batch.memories.length || vectors.some((vector) => vector.length !== embedding.dimensions)) {
     throw new Error('生成的向量数量或维度与当前设置不一致');
   }
+  const ids = batch.memories.map((draft, index) => `lite_ctx_${stableHash(`${batch.charId}|${batch.contextSignature}|${draft.room}|${draft.content}`)}_${index}`);
+  const metadata = buildNewMemoryMetadata(batch.memories, ids);
   const items = batch.memories.map((draft, index) => {
-    const memoryId = `lite_ctx_${stableHash(`${batch.charId}|${batch.contextSignature}|${draft.room}|${draft.content}`)}_${index}`;
+    const memoryId = ids[index];
     const node: MemoryNode = {
       id: memoryId,
       charId: batch.charId,
       content: draft.content,
+      metadata: metadata[index],
       room: draft.room,
       tags: draft.tags,
       importance: draft.importance,

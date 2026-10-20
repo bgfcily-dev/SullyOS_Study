@@ -1,3 +1,4 @@
+import { normalizeEventDate } from '../../../utils/memoryPalace/eventDate';
 /**
  * SullyOS personal memory sync backend (Cloudflare Worker + D1 + Vectorize).
  *
@@ -5,6 +6,10 @@
  * used by SullyOS, so the existing remote-vector and recent-context clients can
  * point at this Worker without a second client implementation.
  */
+
+import { eventBoxRetirementSchema } from './eventBoxRetirement';
+import { handleMemoryChanges, memoryChangesSchema } from './memoryChanges';
+import { stableJson } from '../../../utils/memoryPalace/changeContract';
 
 export interface Env {
   DB: D1Database;
@@ -38,7 +43,7 @@ interface MemoryInput extends Record<string, unknown> {
   vector?: unknown;
 }
 
-interface MemoryRow extends Record<string, unknown> {
+export interface MemoryRow extends Record<string, unknown> {
   memory_id: string;
   vector_key: string;
   namespace_key: string;
@@ -62,6 +67,7 @@ interface MemoryRow extends Record<string, unknown> {
   archived: number;
   is_summary: number;
   event_box_id: string | null;
+  metadata_json: string | null;
 }
 
 const CORS: Record<string, string> = {
@@ -81,10 +87,21 @@ const json = (data: unknown, status = 200, extraHeaders: Record<string, string> 
 const empty = (status = 204, extraHeaders: Record<string, string> = {}) =>
   new Response(null, { status, headers: { ...CORS, ...extraHeaders } });
 
-let schemaReady = false;
+const schemaReady = new WeakMap<D1Database, Promise<void>>();
 
 async function ensureSchema(db: D1Database): Promise<void> {
-  if (schemaReady) return;
+  let pending = schemaReady.get(db);
+  if (!pending) {
+    pending = initializeSchema(db).catch((error) => {
+      schemaReady.delete(db);
+      throw error;
+    });
+    schemaReady.set(db, pending);
+  }
+  await pending;
+}
+
+async function initializeSchema(db: D1Database): Promise<void> {
   const statements = [
     `CREATE TABLE IF NOT EXISTS memory_vectors (
       memory_id TEXT PRIMARY KEY,
@@ -109,7 +126,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       origin TEXT,
       archived INTEGER NOT NULL DEFAULT 0,
       is_summary INTEGER NOT NULL DEFAULT 0,
-      event_box_id TEXT
+      event_box_id TEXT,
+      metadata_json TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_memory_vectors_char ON memory_vectors(char_id)`,
     `CREATE INDEX IF NOT EXISTS idx_memory_vectors_room ON memory_vectors(char_id, room)`,
@@ -129,7 +147,24 @@ async function ensureSchema(db: D1Database): Promise<void> {
   // TABLE statement is split after its first line. Prepared statements keep
   // each schema operation intact, and batch applies the whole schema together.
   await db.batch(statements.map((statement) => db.prepare(statement)));
-  schemaReady = true;
+  // CREATE IF NOT EXISTS does not add columns to an existing installation.
+  const columns = await db.prepare('PRAGMA table_info(memory_vectors)').all<{ name: string }>();
+  if (!columns.results.some((column) => column.name === 'metadata_json')) {
+    try {
+      await db.prepare('ALTER TABLE memory_vectors ADD COLUMN metadata_json TEXT').run();
+    } catch (error) {
+      // Another Worker isolate may have completed the same migration.
+      const current = await db.prepare('PRAGMA table_info(memory_vectors)').all<{ name: string }>();
+      if (!current.results.some((column) => column.name === 'metadata_json')) throw error;
+    }
+  }
+  // Build only after the metadata column exists, including on legacy databases.
+  await db.batch([
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_memory_library_created ON memory_vectors(created_at DESC, memory_id DESC)'),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_memory_library_kind ON memory_vectors(json_extract(metadata_json, '$.kind'), created_at DESC, memory_id DESC)"),
+    ...eventBoxRetirementSchema.map(statement => db.prepare(statement)),
+    ...memoryChangesSchema.map(statement => db.prepare(statement)),
+  ]);
 }
 
 function authorized(request: Request, env: Env): boolean {
@@ -187,6 +222,18 @@ function safeJsonArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+class InputError extends Error {}
+class MemoryConflict extends Error {}
+
+function serializeMetadata(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new InputError('metadata 必须是 JSON 对象；清空请使用 {}');
+  }
+  const encoded = JSON.stringify(value);
+  if (new TextEncoder().encode(encoded).length > 16384) throw new InputError('metadata 不能超过 16 KiB');
+  return encoded;
+}
+
 function memoryToPublic(row: MemoryRow): Record<string, unknown> {
   let tags: unknown[] = [];
   try { tags = safeJsonArray(JSON.parse(row.tags_json || '[]')); } catch { tags = []; }
@@ -212,6 +259,7 @@ function memoryToPublic(row: MemoryRow): Record<string, unknown> {
     archived: Boolean(row.archived),
     is_summary: Boolean(row.is_summary),
     event_box_id: row.event_box_id,
+    metadata: JSON.parse(row.metadata_json || '{}'),
   };
 }
 
@@ -250,15 +298,16 @@ async function normalizeMemory(input: MemoryInput, expectedDimensions: number): 
     archived: boolInt(input.archived),
     is_summary: boolInt(input.is_summary),
     event_box_id: input.event_box_id == null ? null : String(input.event_box_id),
+    metadata_json: input.metadata === undefined ? null : serializeMetadata(input.metadata),
   };
   return { row, vector };
 }
 
-const UPSERT_SQL = `INSERT INTO memory_vectors (
+const UPSERT_BASE_SQL = `INSERT INTO memory_vectors (
   memory_id, vector_key, namespace_key, char_id, content, vector_json, dimensions, model, room,
   importance, tags_json, mood, valence, arousal, created_at, last_accessed_at, access_count,
-  pinned_until, source_id, origin, archived, is_summary, event_box_id
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  pinned_until, source_id, origin, archived, is_summary, event_box_id, metadata_json
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(memory_id) DO UPDATE SET
   vector_key=excluded.vector_key, namespace_key=excluded.namespace_key, char_id=excluded.char_id,
   content=excluded.content, vector_json=excluded.vector_json, dimensions=excluded.dimensions,
@@ -266,14 +315,20 @@ ON CONFLICT(memory_id) DO UPDATE SET
   mood=excluded.mood, valence=excluded.valence, arousal=excluded.arousal, created_at=excluded.created_at,
   last_accessed_at=excluded.last_accessed_at, access_count=excluded.access_count,
   pinned_until=excluded.pinned_until, source_id=excluded.source_id, origin=excluded.origin,
-  archived=excluded.archived, is_summary=excluded.is_summary, event_box_id=excluded.event_box_id`;
+  archived=excluded.archived, is_summary=excluded.is_summary, event_box_id=excluded.event_box_id,
+  metadata_json=COALESCE(excluded.metadata_json, memory_vectors.metadata_json)`;
+const UPSERT_SQL = `${UPSERT_BASE_SQL}
+WHERE COALESCE(json_extract(memory_vectors.metadata_json, '$.review_revision'),0)=0
+  OR (excluded.char_id=memory_vectors.char_id AND excluded.content=memory_vectors.content
+    AND excluded.archived=memory_vectors.archived AND excluded.is_summary=memory_vectors.is_summary
+    AND (excluded.metadata_json IS NULL OR excluded.metadata_json=memory_vectors.metadata_json))`;
 
-function bindMemory(db: D1Database, row: MemoryRow): D1PreparedStatement {
-  return db.prepare(UPSERT_SQL).bind(
+function bindMemory(db: D1Database, row: MemoryRow, confirmed = false): D1PreparedStatement {
+  return db.prepare(confirmed ? UPSERT_BASE_SQL : UPSERT_SQL).bind(
     row.memory_id, row.vector_key, row.namespace_key, row.char_id, row.content, row.vector_json,
     row.dimensions, row.model, row.room, row.importance, row.tags_json, row.mood, row.valence,
     row.arousal, row.created_at, row.last_accessed_at, row.access_count, row.pinned_until,
-    row.source_id, row.origin, row.archived, row.is_summary, row.event_box_id,
+    row.source_id, row.origin, row.archived, row.is_summary, row.event_box_id, row.metadata_json,
   );
 }
 
@@ -283,9 +338,19 @@ async function upsertMemories(request: Request, env: Env): Promise<Response> {
   if (inputs.length === 0 || inputs.length > 100) return json({ error: '单次需要上传 1 到 100 条记忆' }, 400);
   const expectedDimensions = Math.trunc(numberValue(env.VECTOR_DIMENSIONS, 1024));
   const normalized = await Promise.all(inputs.map((input) => normalizeMemory(input, expectedDimensions)));
+  for (const { row } of normalized) {
+    const current = await env.DB.prepare('SELECT * FROM memory_vectors WHERE memory_id=?').bind(row.memory_id).first<MemoryRow>();
+    if (!current || !Number(JSON.parse(current.metadata_json || '{}').review_revision)) continue;
+    if (row.char_id !== current.char_id || row.content !== current.content || row.archived !== current.archived || row.is_summary !== current.is_summary || (row.metadata_json !== null && stableJson(JSON.parse(row.metadata_json)) !== stableJson(JSON.parse(current.metadata_json || '{}')))) throw new MemoryConflict('这条记忆已经过确认更新，请刷新并通过修改提案更新，旧同步不能覆盖它');
+  }
   await env.DB.batch(normalized.map(({ row }) => bindMemory(env.DB, row)));
   await env.VECTORS.upsert(normalized.map(({ row, vector }) => ({ id: row.vector_key, values: vector, namespace: row.namespace_key })));
-  return preferRepresentation(request) ? json(normalized.map(({ row }) => memoryToPublic(row)), 201) : empty(204);
+  if (!preferRepresentation(request)) return empty(204);
+  // Return committed metadata, including fields preserved from older clients.
+  const rows = await Promise.all(normalized.map(({ row }) => env.DB.prepare(
+    'SELECT * FROM memory_vectors WHERE memory_id = ?',
+  ).bind(row.memory_id).first<MemoryRow>()));
+  return json(rows.filter((row): row is MemoryRow => row !== null).map(memoryToPublic), 201);
 }
 
 type Filter = { sql: string; values: unknown[] };
@@ -293,6 +358,34 @@ type Filter = { sql: string; values: unknown[] };
 function memoryFilter(url: URL): Filter {
   const clauses: string[] = [];
   const values: unknown[] = [];
+  const eventDate = url.searchParams.get('event_date');
+  if (eventDate !== null) {
+    if (!normalizeEventDate(eventDate) || !url.searchParams.get('char_id')?.startsWith('eq.')) throw new InputError('日期查询需要有效事件日期和角色 ID');
+    // Metadata wins; legacy headers are accepted only at the start of a record.
+    const expression = `CASE WHEN json_type(metadata_json, '$.event_date') IS NOT NULL THEN json_extract(metadata_json, '$.event_date') WHEN substr(content,1,1)='[' AND substr(content,instr(content,']')+1,1) IN (char(10),char(13)) THEN substr(content,2,instr(content,']')-2) END`;
+    clauses.push(`(${expression} = ? OR ${expression} LIKE ?)`);
+    values.push(eventDate, eventDate + '-%');
+  }
+  const keyword = url.searchParams.get('q')?.trim();
+  if (keyword) {
+    if (keyword.length > 200) throw new InputError('搜索关键词不能超过 200 个字符');
+    const pattern = `%${keyword.replace(/[\\%_]/g, '\\$&')}%`;
+    clauses.push(`(content LIKE ? ESCAPE '\\' OR memory_id LIKE ? ESCAPE '\\')`);
+    values.push(pattern, pattern);
+  }
+  for (const [key, value] of url.searchParams) {
+    if (!key.startsWith('metadata.')) continue;
+    const field = key.slice('metadata.'.length);
+    if (!['kind', 'event_id', 'previous_id', 'current_reflection_id', 'status'].includes(field)) {
+      throw new InputError(`不支持的 metadata 筛选字段：${field}`);
+    }
+    const expression = `json_extract(metadata_json, '$.${field}')`;
+    if (value === 'is.null') clauses.push(`${expression} IS NULL`);
+    else if (value.startsWith('eq.')) {
+      clauses.push(`${expression} = ?`);
+      values.push(value.slice(3));
+    } else throw new InputError('metadata 筛选只支持 eq. 或 is.null');
+  }
   const charId = url.searchParams.get('char_id');
   if (charId?.startsWith('eq.')) { clauses.push('char_id = ?'); values.push(charId.slice(3)); }
   const room = url.searchParams.get('room');
@@ -329,7 +422,7 @@ async function selectMemoryRows(db: D1Database, url: URL, withPaging = true): Pr
   let query = `SELECT * FROM memory_vectors${filter.sql}${memoryOrder(url)}`;
   const values = [...filter.values];
   if (withPaging) {
-    const limit = Math.min(1000, Math.max(0, Math.trunc(numberValue(url.searchParams.get('limit'), 1000))));
+    const limit = Math.min(1000, Math.max(0, Math.trunc(numberValue(url.searchParams.get('limit') ?? 1000, 1000))));
     const offset = Math.max(0, Math.trunc(numberValue(url.searchParams.get('offset'), 0)));
     query += ' LIMIT ? OFFSET ?';
     values.push(limit, offset);
@@ -343,10 +436,18 @@ async function getMemories(request: Request, env: Env, url: URL): Promise<Respon
   const total = Number(countRow?.total || 0);
   if (request.method === 'HEAD') return empty(200, { 'Content-Range': `0-0/${total}` });
   const rows = await selectMemoryRows(env.DB, url);
-  return json(rows.map(memoryToPublic), 200, { 'Content-Range': rows.length ? `0-${rows.length - 1}/${total}` : `*/${total}` });
+  const fields = url.searchParams.get('select');
+  const selected = fields && fields !== '*' ? fields.split(',').map(field => field.trim()) : null;
+  const data = rows.map(row => {
+    const record = memoryToPublic(row);
+    return selected ? Object.fromEntries(selected.filter(field => Object.hasOwn(record, field)).map(field => [field, record[field]])) : record;
+  });
+  const offset = Math.max(0, Math.trunc(numberValue(url.searchParams.get('offset'), 0)));
+  return json(data, 200, { 'Content-Range': rows.length ? `${offset}-${offset + rows.length - 1}/${total}` : `*/${total}` });
 }
 
 const PATCH_COLUMNS: Record<string, { column: string; value: (input: unknown) => unknown }> = {
+  metadata: { column: 'metadata_json', value: serializeMetadata },
   content: { column: 'content', value: (value) => String(value || '') },
   room: { column: 'room', value: (value) => value == null ? null : String(value) },
   importance: { column: 'importance', value: (value) => Math.trunc(numberValue(value, 5)) },
@@ -373,8 +474,19 @@ async function patchMemories(request: Request, env: Env, url: URL): Promise<Resp
   if (!updates.length) return json({ error: '没有可更新的字段' }, 400);
   const filter = memoryFilter(url);
   if (!filter.sql) return json({ error: 'PATCH 必须带筛选条件' }, 400);
-  const sql = `UPDATE memory_vectors SET ${updates.map(({ column }) => `${column} = ?`).join(', ')}${filter.sql}`;
-  await env.DB.prepare(sql).bind(...updates.map(({ value }) => value), ...filter.values).run();
+  const protectedRows = await env.DB.prepare(`SELECT * FROM memory_vectors${filter.sql}`).bind(...filter.values).all<MemoryRow>();
+  for (const current of protectedRows.results) {
+    if (!Number(JSON.parse(current.metadata_json || '{}').review_revision)) continue;
+    for (const field of ['content', 'metadata', 'archived', 'is_summary']) {
+      if (!(field in payload)) continue;
+      const original = field === 'metadata' ? JSON.parse(current.metadata_json || '{}') : field === 'archived' || field === 'is_summary' ? Boolean(current[field]) : current[field];
+      if (stableJson(payload[field]) !== stableJson(original)) throw new MemoryConflict('已确认的记忆不能被旧同步覆盖，请通过修改提案更新');
+    }
+  }
+  const guarded = updates.filter(({ column }) => ['content','metadata_json','archived','is_summary'].includes(column));
+  const protection = guarded.length ? ` AND (COALESCE(json_extract(metadata_json, '$.review_revision'),0)=0 OR (${guarded.map(({ column }) => `${column} = ?`).join(' AND ')}))` : '';
+  const sql = `UPDATE memory_vectors SET ${updates.map(({ column }) => `${column} = ?`).join(', ')}${filter.sql}${protection}`;
+  await env.DB.prepare(sql).bind(...updates.map(({ value }) => value), ...filter.values, ...guarded.map(({ value }) => value)).run();
   if (!preferRepresentation(request)) return empty(204);
   const rows = await selectMemoryRows(env.DB, url, false);
   return json(rows.map(memoryToPublic));
@@ -411,7 +523,7 @@ async function matchVectors(request: Request, env: Env): Promise<Response> {
   const matches = (result.matches || []).filter((match) => numberValue(match.score) > threshold);
   if (!matches.length) return json([]);
   const keys = matches.map((match) => match.id);
-  const rows = (await env.DB.prepare(`SELECT * FROM memory_vectors WHERE archived = 0 AND vector_key IN (${keys.map(() => '?').join(',')})`).bind(...keys).all<MemoryRow>()).results;
+  const rows = (await env.DB.prepare(`SELECT * FROM memory_vectors WHERE char_id = ? AND archived = 0 AND is_summary = 0 AND (json_extract(metadata_json,'$.status') IS NULL OR json_extract(metadata_json,'$.status')='active') AND vector_key IN (${keys.map(() => '?').join(',')})`).bind(charId, ...keys).all<MemoryRow>()).results;
   const byKey = new Map(rows.map((row) => [row.vector_key, row]));
   return json(matches.flatMap((match) => {
     const row = byKey.get(match.id);
@@ -478,7 +590,14 @@ export default {
       await ensureSchema(env.DB);
       const url = new URL(request.url);
       const path = url.pathname.replace(/\/+$/, '') || '/';
-      if (path === '/health') return json({ ok: true, backend: 'cloudflare-memory-sync' });
+      if (path.startsWith('/memory/change-proposals')) return await handleMemoryChanges(request, env, url, { publicMemory: memoryToPublic, normalize: normalizeMemory, bind: row => bindMemory(env.DB, row, true), hash: hashKey, json });
+      if (path === '/health') return json({ ok: true, backend: 'cloudflare-memory-sync', capabilities: ['memory_metadata_v1', 'memory_library_search_v1', 'event_box_retirement_v1', 'confirmed_memory_changes_v1'] });
+      if (path === '/memory/event-box-policy' && request.method === 'GET') {
+        const charId = url.searchParams.get('char_id')?.trim();
+        if (!charId) throw new InputError('char_id 是必填项');
+        const policy = await env.DB.prepare('SELECT disabled FROM memory_event_box_policy WHERE char_id = ?').bind(charId).first<{ disabled: number }>();
+        return json({ disabled: policy?.disabled === 1 });
+      }
       if (path === '/rest/v1/rpc/match_vectors' && request.method === 'POST') return await matchVectors(request, env);
       if (path === '/rest/v1/shared_recent_contexts') return await sharedContexts(request, env, url);
       if (path === '/rest/v1/memory_vectors') {
@@ -490,7 +609,7 @@ export default {
       return json({ error: 'Not found' }, 404);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return json({ error: message }, message.includes('必填') || message.includes('向量') ? 400 : 500);
+      return json({ error: message }, error instanceof MemoryConflict ? 409 : error instanceof InputError || message.includes('必填') || message.includes('向量') ? 400 : 500);
     }
   },
 };

@@ -70,6 +70,8 @@ export interface MemoryEntity {
 }
 
 export interface MemoryNode {
+    /** New logical classification; absent on untouched legacy memories. */
+    metadata?: import('./metadata').MemoryMetadata;
     /** 可选补注的固定说话日期，不是 createdAt 事件日。原文始终不含系统补注。 */
     relativeTimeAnchor?: { dateKey: string; source: 'message'; messageId?: number };
     id: string;

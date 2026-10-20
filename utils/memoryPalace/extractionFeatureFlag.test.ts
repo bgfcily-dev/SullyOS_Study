@@ -57,6 +57,17 @@ describe('memory extraction smart-context compatibility gate', () => {
         mockedSafeFetchJson.mockResolvedValue(extractionReply() as any);
     });
 
+    it('separates new facts and reflections and resolves first-reflection links', async () => {
+        const fact = { content: '用户说明当天断网。', room: 'user_room', metadata: { kind: 'event' } };
+        const reflection = { content: '我不再认为是故意忽视。', room: 'bedroom', mood: 'peaceful', metadata: { kind: 'reflection', event_id: 'N0', confidence: 0.45 } };
+        mockedSafeFetchJson.mockResolvedValue({ choices: [{ message: { content: JSON.stringify([fact, reflection]) } }] } as any);
+        const { memories } = await extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig);
+        expect(memories).toHaveLength(2);
+        expect(memories[0].metadata).toEqual({ kind: 'event', status: 'active', current_reflection_id: memories[1].id });
+        expect(memories[1].metadata).toEqual({ kind: 'reflection', status: 'active', event_id: memories[0].id, confidence: 0.45 });
+        expect(capturedSystemPrompt()).toContain('不能由整理模型补造心理活动');
+    });
+
     it('keeps the master prompt and memory shape when smart context is off', async () => {
         const result = await extractMemoriesFromBuffer(
             messages, 'char-extraction-flags', '测试角色', llmConfig, undefined, '用户',

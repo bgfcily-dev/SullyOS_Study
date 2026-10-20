@@ -243,6 +243,12 @@ export async function importMemoryPalace(
                 charId: targetCharId,
                 eventBoxId: remapId(boxIdMap, n.eventBoxId),
                 sourceId: remapId(nodeIdMap, n.sourceId),
+                ...(rest.metadata ? { metadata: {
+                    ...rest.metadata,
+                    event_id: remapId(nodeIdMap, rest.metadata.event_id),
+                    previous_id: remapId(nodeIdMap, rest.metadata.previous_id),
+                    current_reflection_id: remapId(nodeIdMap, rest.metadata.current_reflection_id),
+                } } : {}),
                 // 带向量才算已嵌入；不带向量的节点标记未嵌入，等后续重建向量
                 embedded: hasVector,
             });

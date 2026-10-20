@@ -12,6 +12,7 @@ import { vectorSearch } from './vectorSearch';
 import { bm25Search, bm25SearchIndexed, bm25SearchDualRun } from './bm25';
 import { bm25Index } from './bm25Index';
 import { calculateEffectiveImportance } from './consolidation';
+import { fetchEventDateMemories, matchesEventDate, queryEventDates } from './eventDate';
 
 // ─── BM25 灰度开关 ────────────────────────────────────
 //
@@ -123,6 +124,15 @@ export async function hybridSearch(
 
     // 3. BM25 搜索（排除 archived 节点 —— 它们已被压入 EventBox summary）
     const allNodes = prefetch?.allNodes ?? await MemoryNodeDB.getByCharId(charId);
+    const dates = queryEventDates(query);
+    const dateNodes: MemoryNode[] = remoteVectorConfig?.enabled && remoteVectorConfig.initialized && dates.length
+        ? (await fetchEventDateMemories(remoteVectorConfig, charId, dates)).map(row => ({
+            id: row.memory_id, charId, content: row.content, metadata: row.metadata,
+            room: row.room || 'living_room', importance: row.importance ?? 5, tags: row.tags || [], mood: row.mood || 'neutral',
+            embedded: true, createdAt: Number(row.created_at) || 0, lastAccessedAt: Number(row.last_accessed_at) || 0,
+            accessCount: Number(row.access_count) || 0, archived: false, isBoxSummary: !!row.is_summary,
+        }))
+        : allNodes.filter(node => !node.archived && dates.some(date => matchesEventDate(node, date)));
     const searchableNodes = allNodes.filter(n => n.embedded && !n.archived);
 
     // 倒排索引按"全量节点"构建（含 archived / 未 embedded），unarchive 后立即可搜，
@@ -232,6 +242,12 @@ export async function hybridSearch(
         });
     }
 
+    // Explicit dates are a separate retrieval channel, not embedding similarity.
+    for (const node of dateNodes) {
+        const existing = results.find(item => item.node.id === node.id);
+        if (existing) { existing.node = node; existing.finalScore += 1; }
+        else results.push({ node, finalScore: 1, similarity: 0, bm25Score: 0, roomScore: 1 });
+    }
     // 6. 按 finalScore 降序
     results.sort((a, b) => b.finalScore - a.finalScore);
 

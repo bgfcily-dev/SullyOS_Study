@@ -5,7 +5,17 @@ import { vectorSearch } from './vectorSearch';
 import { ROOM_CONFIGS, resolveMemoryScoringRoom, type MemoryNode } from './types';
 
 vi.mock('./vectorSearch', () => ({ vectorSearch: vi.fn() }));
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
+it('recalls a cloud-only date when vector search and the local database have no hits', async () => {
+    vi.mocked(vectorSearch).mockResolvedValue([]);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([{
+        memory_id: 'cloud-date', char_id: 'room-test', content: '[2026-10-20]\n旅行', room: 'living_room', importance: 5,
+    }]))));
+    const results = await hybridSearch('查2026-10-20的记忆', 'room-test', {} as any, 15,
+        { enabled: true, initialized: true, supabaseUrl: 'https://test.workers.dev', supabaseAnonKey: 'key' } as any,
+        { queryVector: new Float32Array([1, 0]), allNodes: [], allVectors: [] });
+    expect(results.map(result => result.node.id)).toEqual(['cloud-date']);
+});
 const now = 1791045900362;
 const node = (id: string, room: unknown): MemoryNode => ({
     id, charId: 'room-test', content: '一起看花的约定', room,

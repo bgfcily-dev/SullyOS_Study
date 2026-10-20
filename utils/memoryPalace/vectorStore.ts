@@ -60,7 +60,9 @@ export async function vectorizeAndStore(
         // 去重检查 — ensureFloat32 兼容三种存储形态（number[] / Float32Array
         // / Uint8Array），同时保护 cosineSimilarity 不被 Uint8Array 误读字节当数。
         const queryF32 = ensureFloat32(vector);
-        const isDuplicate = !options.skipDedup && existingVectors.some(
+        // New event/reflection groups must remain complete: semantic similarity
+        // alone cannot discard a fact or its linked subjective interpretation.
+        const isDuplicate = !options.skipDedup && !node.metadata?.kind && existingVectors.some(
             ev => cosineSimilarity(queryF32, ensureFloat32(ev.vector)) > DEDUP_THRESHOLD
         );
 

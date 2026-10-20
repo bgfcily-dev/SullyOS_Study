@@ -14,6 +14,8 @@ import { buildSARMemoryBoundaryInstruction, formatMessageForPrompt } from '../me
 import { readRecallRuntimeSnapshot } from './trace';
 import { hasRelativeTime, hasMatchingRelativeSource, relativeTimeEnabled } from './relativeTime';
 import { getLocalDateKey } from '../localDate';
+import { buildNewMemoryMetadata, NEW_MEMORY_METADATA_RULES } from './metadata';
+import { areEventBoxesDisabled } from './eventBoxPolicy';
 
 function generateId(): string {
     return `mn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -44,8 +46,8 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
 
 2. **重要性分级控制文字长度**：
    - 重要性 1–5：15–50字，事实为主
-   - 重要性 6–7：60–120字，包含我的感受
-   - 重要性 8–10：100–200字，完整叙事（起因→经过→我的感受/反应）
+   - 重要性 6–7：60–120字，保留关键细节
+   - 重要性 8–10：100–200字，完整叙事；感受按新增分类规则另列可选 reflection
 
 3. **房间分配**（凡是涉及${userLabel}的家人/朋友/同事等人际关系，**一律进 user_room**，哪怕只是一次具体事件）：
    - living_room：**纯日常琐事**（不涉及重要人际关系、也不涉及深层情感）。天气、吃啥、随口吐槽放这里。
@@ -154,8 +156,9 @@ function parseMemoryNodesFromBuffer(
         return result;
     };
 
-    return parsed
-        .filter(item => item.content && item.room)
+    const drafts = parsed
+        .filter(item => item.content && item.room);
+    const memories = drafts
         .map((item): MemoryNode => {
             const createdAt = resolveCreatedAt(item.date);
             const pinDays = parseInt(item.pinDays, 10);
@@ -199,6 +202,16 @@ function parseMemoryNodesFromBuffer(
             }
             return memory;
         });
+    const metadata = buildNewMemoryMetadata(drafts, memories.map(memory => memory.id));
+    memories.forEach((memory, index) => {
+        memory.metadata = metadata[index];
+        if (metadata[index].kind !== 'reflection') {
+            memory.mood = 'neutral';
+            memory.valence = undefined;
+            memory.arousal = undefined;
+        }
+    });
+    return memories;
 }
 
 /** 把 LLM 吐的 v/a 夹到 [-1, 1]，防止它写成 1.5 / -2 之类 */
@@ -416,14 +429,15 @@ export async function extractMemoriesFromBuffer(
 
     // 构建已有记忆引用块（带 O-编号，供 LLM 输出 relatedTo）
     const hasRelated = relatedMemories && relatedMemories.length > 0;
+    const reviewed = await areEventBoxesDisabled(charId);
     const relatedBlock = hasRelated
-        ? buildRelatedMemoriesBlock(relatedMemories!)
+        ? reviewed ? `\n## 已有记忆（仅供理解指代；不要覆盖、修正或建立事件盒。本次只新增记录，旧记忆更新另走用户确认流程）\n${relatedMemories!.map((r, i) => `O${i}. ${r.content}`).join('\n')}\n` : buildRelatedMemoriesBlock(relatedMemories!)
         : '';
-    const relatedToRule = hasRelated ? buildRelatedToRule() : '';
-    const relatedToFormat = hasRelated ? buildRelatedToFormatHint() : '';
+    const relatedToRule = hasRelated && !reviewed ? buildRelatedToRule() : '';
+    const relatedToFormat = hasRelated && !reviewed ? buildRelatedToFormatHint() : '';
 
     // 便利贴摘除判断
-    const hasPinned = pinnedMemories && pinnedMemories.length > 0;
+    const hasPinned = !reviewed && pinnedMemories && pinnedMemories.length > 0;
     const pinnedBlock = hasPinned
         ? `\n## 当前便利贴（如果对话内容表明某条便利贴已失效，在输出末尾用 unpin 标注）\n${
             pinnedMemories!.map((p, i) => `P${i}. ${p.content}`).join('\n')
@@ -436,7 +450,8 @@ export async function extractMemoriesFromBuffer(
 
     const systemPrompt = `你是 ${charName}。根据给定的对话内容，以你的第一人称视角（"我"）提取值得记住的记忆。${contextBlock}${relatedBlock}${pinnedBlock}
 
-${buildRulesBlock(charName, userLabel, includeEntities)}${relatedToRule}${unpinRule}${sarMemoryBoundary ? `\n\n${sarMemoryBoundary}` : ''}${linkDates ? `
+${buildRulesBlock(charName, userLabel, includeEntities)}${relatedToRule}${unpinRule}
+${NEW_MEMORY_METADATA_RULES}${sarMemoryBoundary ? `\n\n${sarMemoryBoundary}` : ''}${linkDates ? `
 
 ## 相对时间来源
 content 保留原消息的相对时间措辞，不要自行添加日期括号。含“昨天、前天、几天前、上周、上个月、去年”等措辞时，额外输出 relativeTimeSource 字段，值为说出该措辞的原消息编号（例如 "M0"）。系统将以该消息的发送日补注，不使用 date 事件日。不同说话日期的相对时间应拆成不同记忆。没有可靠来源、跨时区语义不明或无法使用同一个参照日时，省略该字段，禁止猜测。` : ''}
@@ -455,7 +470,8 @@ content 保留原消息的相对时间措辞，不要自行添加日期括号。
     "tags": ["标签1", "标签2"],${includeEntities ? `
     "entities": [{"name": "明确出现的专名", "type": "person"}],` : ''}
     "date": "YYYY-MM-DD",
-    "pinDays": 3${relatedToFormat}
+    "pinDays": 3,
+    "metadata": {"kind": "event"}${relatedToFormat}
   }
 ]
 
@@ -531,7 +547,7 @@ pinDays 仅在需要置顶时才写，大多数记忆不需要。
         // 解析纠正指令：{ "correct": "O0", "note": "实情是..." } → 真实 ID
         // 仅在有 relatedMemories 时才有意义（O 编号必须能解析回真节点 id）
         const corrections: { targetId: string; note: string }[] = [];
-        if (hasRelated) {
+        if (hasRelated && !reviewed) {
             for (const item of parsed) {
                 if (!item || typeof item.correct !== 'string') continue;
                 const note = typeof item.note === 'string' ? item.note.trim() : '';
