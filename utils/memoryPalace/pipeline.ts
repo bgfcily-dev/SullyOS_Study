@@ -1902,7 +1902,7 @@ async function extractAndStoreMemories(
         }
 
         if (requireAllBatches && batchResults.some(batch => !batch.ok)) {
-            console.warn('🏰 [Pipeline] 一键存入存在失败批次：不写向量、不推进水位线，保留原文供下次重试');
+            console.warn('🏰 [Pipeline] 存在失败批次：不写向量、不推进水位线，保留原文供下次重试');
             return {
                 stored: 0,
                 skipped: 0,
@@ -2081,7 +2081,7 @@ export interface ProcessNewMessagesOptions {
     retainRecentMessages?: number;
     /** 处理水位线到目标边界之间的全部内容，不套用日常档位热区与 85% 尾部保留。 */
     drainBuffer?: boolean;
-    /** 任一 LLM 提取批次失败时整轮不写向量、不推进水位线。 */
+    /** 兼容一键存入的空结果完成语义；所有推进水位的路径始终要求全部批次成功。 */
     requireAllBatches?: boolean;
     /** 测试或刚完成设置写入时可显式覆盖；常规路径会按 charId 从 IndexedDB 读取。 */
     waterline?: MemoryPalaceWaterlineConfig;
@@ -2215,7 +2215,7 @@ export async function processNewMessages(
         //       消息不会被重复处理，去重在这条路径上收益小、误伤大。
         const core = await extractAndStoreMemories(
             toProcess, charId, charName, embeddingConfig, llmConfig, userName, onProgress, true,
-            options.requireAllBatches === true,
+            true,
         );
 
         if (core.memories.length === 0) {

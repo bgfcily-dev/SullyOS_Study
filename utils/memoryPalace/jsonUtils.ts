@@ -12,12 +12,19 @@
 
 /**
  * 从 LLM 回复中安全提取并解析 JSON 数组
+ * requireComplete 用于会推进原文水位的提取：只允许完整数组及可整批修复的格式，禁止部分抢救。
  */
-export function safeParseJsonArray(raw: string): any[] {
-    if (!raw || !raw.trim()) return [];
+export function safeParseJsonArray(raw: string, requireComplete = false): any[] {
+    if (!raw || !raw.trim()) {
+        if (requireComplete) throw new Error('记忆提取返回空内容，请重试');
+        return [];
+    }
 
     // 去掉 markdown 代码块包裹
     let cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```/g, '').trim();
+    if (requireComplete && (!cleaned.startsWith('[') || !cleaned.endsWith(']'))) {
+        throw new Error('记忆提取未返回完整 JSON 数组，请重试');
+    }
 
     // 1. 尝试提取完整的 [...] 块
     const fullMatch = cleaned.match(/\[[\s\S]*\]/);
@@ -35,10 +42,14 @@ export function safeParseJsonArray(raw: string): any[] {
             if (Array.isArray(result)) return result;
         } catch { /* continue */ }
 
+        if (requireComplete) throw new Error('记忆提取 JSON 不完整或格式异常，请重试');
+
         // 逐对象抢救
         const salvaged = salvageObjects(fullMatch[0]);
         if (salvaged.length > 0) return salvaged;
     }
+
+    if (requireComplete) throw new Error('记忆提取未返回完整 JSON 数组，请重试');
 
     // 2. 没有完整 [...] → 可能是被 max_tokens 截断了
     //    找到 [ 开始，尽力从截断的内容中抢救完整的对象

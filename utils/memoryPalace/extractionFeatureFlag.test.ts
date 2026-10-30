@@ -57,6 +57,26 @@ describe('memory extraction smart-context compatibility gate', () => {
         mockedSafeFetchJson.mockResolvedValue(extractionReply() as any);
     });
 
+    it('propagates API failure instead of reporting a successful empty extraction', async () => {
+        mockedSafeFetchJson.mockRejectedValue(new Error('API 503'));
+        await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).rejects.toThrow('API 503');
+    });
+
+    it.each(['', '服务暂时不可用', '{"error":[]}', '[{"content":"已完成的一条","room":"living_room"}, {"content":', '[{"content":"缺少房间"}]'])('rejects malformed or partial output: %s', async content => {
+        mockedSafeFetchJson.mockResolvedValue({ choices: [{ message: { content } }] } as any);
+        await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).rejects.toThrow();
+    });
+
+    it('accepts an explicit empty array as a successful extraction', async () => {
+        mockedSafeFetchJson.mockResolvedValue({ choices: [{ message: { content: '```json\n[]\n```' } }] } as any);
+        await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).resolves.toMatchObject({ memories: [] });
+    });
+
+    it('rejects token-truncated output even if its JSON looks complete', async () => {
+        mockedSafeFetchJson.mockResolvedValue({ choices: [{ finish_reason: 'length', message: { content: '[]' } }] } as any);
+        await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).rejects.toThrow('截断');
+    });
+
     it('separates new facts and reflections and resolves first-reflection links', async () => {
         const fact = { content: '用户说明当天断网。', room: 'user_room', metadata: { kind: 'event' } };
         const reflection = { content: '我不再认为是故意忽视。', room: 'bedroom', mood: 'peaceful', metadata: { kind: 'reflection', event_id: 'N0', confidence: 0.45 } };

@@ -23,7 +23,10 @@ import {
 } from '@phosphor-icons/react';
 import { clearSharedContext, fetchSharedContext, publishSharedContext, SHARED_CONTEXT_SQL, testSharedContextConnection } from './cloud';
 import { mergeMessageHistory, newLiteMessage } from './context';
-import { requestLiteReply, testLiteChatConnection } from './chatApi';
+import { requestLiteReply, testLiteChatConnection, extractLiteText, liteChatUrl } from './chatApi';
+import MemoryChangeReview, { MemoryChangeNotice } from '../components/chat/MemoryChangeReview';
+import { checkMemoryChanges } from '../utils/memoryPalace/changeClient';
+import { getEmbedding } from '../utils/memoryPalace/embedding';
 import type { LiteTokenUsage } from './chatApi';
 import {
   loadActiveApiId,
@@ -182,6 +185,8 @@ export function LiteApp() {
     try { const saved = JSON.parse(localStorage.getItem('handoff_received_context_v1') || 'null'); return saved?.url === cloudConfig.supabaseUrl ? saved.context : null; } catch { return null; }
   });
   const receivedHandoffRef = useRef('');
+  const memoryCheckScope = JSON.stringify([cloudConfig.supabaseUrl, cloudConfig.supabaseAnonKey, cloudContext?.charId]);
+  const memoryCheckScopeRef = useRef(memoryCheckScope); memoryCheckScopeRef.current = memoryCheckScope;
   const [handoffPreview, setHandoffPreview] = useState<{ input: Parameters<typeof publishSharedContext>[0]; summary: string } | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [sending, setSending] = useState(false);
@@ -545,6 +550,19 @@ export function LiteApp() {
         if (index < replyMessages.length - 1) {
           await new Promise<void>((resolve) => window.setTimeout(resolve, getLiteReplyDelay(replyParts[index], reducedMotion)));
         }
+      }
+      if (visibleActiveCloud?.charId && cloudReady && memorySummaryApiReady && memories.length) {
+        const checkScope = memoryCheckScope;
+        const charId = visibleActiveCloud.charId;
+        void checkMemoryChanges({ cloud: cloudConfig, charId,
+          candidates: memories.map(memory => ({ memory_id: memory.memoryId, char_id: charId, content: memory.content, metadata: memory.metadata, importance: memory.importance, room: memory.room })),
+          sources: [{ role: 'user', content: latestMessage.content }, { role: 'assistant', content: reply.text }],
+          run: async (system, user) => {
+            const response = await fetch(liteChatUrl(memorySummaryApi.baseUrl), { method: 'POST', headers: { Authorization: `Bearer ${memorySummaryApi.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: memorySummaryApi.model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0, max_tokens: 3500, stream: false }), signal: AbortSignal.timeout(60_000) });
+            if (!response.ok) throw new Error(`记忆建议 API 请求失败（${response.status}）`);
+            return extractLiteText(await response.json());
+          },
+        }).catch(error => { if (memoryCheckScopeRef.current === checkScope) setNotice({ kind: 'info', text: `记忆建议检查未完成：${error.message}` }); });
       }
     } catch (error: any) {
       setReplyError(error?.message || '生成回复失败');
@@ -983,6 +1001,7 @@ export function LiteApp() {
           </div>}
         </div>
       </header>
+      {cloudReady && cloudContext?.charId && <MemoryChangeNotice cloud={cloudConfig} charId={cloudContext.charId} onOpen={() => openSettings('memory')} />}
 
       <section
         className={`message-stage${chatBackground ? ' has-chat-background' : ''}${shownMessages.length === 0 ? ' is-empty' : ''}`}
@@ -1165,6 +1184,10 @@ export function LiteApp() {
             </div>}
 
             {settingsSection === 'memory' && <>
+            {cloudReady && cloudContext?.charId && <MemoryChangeReview cloud={cloudConfig} charId={cloudContext.charId} model={embeddingConfig.model} embed={async text => {
+              if (!embeddingConfig.baseUrl || !embeddingConfig.apiKey || !embeddingConfig.model) throw new Error('请先填写完整的 Embedding API');
+              return Array.from(await getEmbedding(text, embeddingConfig));
+            }} />}
             <div className="setting-card">
               <div className="setting-card-title"><div><strong>云端：接力与向量库</strong><p>复制原版“记忆宫殿 → 云端记忆同步”的同一地址和密钥；支持 Cloudflare Worker 或 Supabase。</p></div></div>
               <label>同步服务 URL<input value={cloudConfig.supabaseUrl} onChange={(event) => setCloudConfig({ ...cloudConfig, supabaseUrl: event.target.value })} placeholder="https://xxxx.workers.dev 或 https://xxxx.supabase.co" autoCapitalize="none" /></label>

@@ -505,10 +505,17 @@ pinDays 仅在需要置顶时才写，大多数记忆不需要。
         );
 
         const reply = data.choices?.[0]?.message?.content || '';
-        const parsed = safeParseJsonArray(reply);
-
-        if (parsed.length === 0 && reply.trim().length > 0) {
-            console.warn(`🏰 [Extraction] LLM 返回了内容但 JSON 解析为空数组，可能格式异常。原始回复前200字: ${reply.slice(0, 200)}`);
+        if (data.choices?.[0]?.finish_reason === 'length') {
+            throw new Error('记忆提取输出被截断，请重试');
+        }
+        // 该结果会推进原文水位，不能把解析失败或抢救出的部分对象当作整批成功。
+        const parsed = safeParseJsonArray(reply, true);
+        if (parsed.some(item => !item || typeof item !== 'object' || (
+            !(typeof item.content === 'string' && item.content.trim() && typeof item.room === 'string' && item.room.trim())
+            && !(hasPinned && typeof item.unpin === 'string')
+            && !(hasRelated && !reviewed && typeof item.correct === 'string' && typeof item.note === 'string' && item.note.trim())
+        ))) {
+            throw new Error('记忆提取包含无效条目，请重试');
         }
 
         console.log(`🏰 [Extraction] 缓冲区提取完成：从 ${messages.length} 条消息中提取 ${parsed.length} 条记忆`);
@@ -565,8 +572,7 @@ pinDays 仅在需要置顶时才写，大多数记忆不需要。
         return { memories, crossTimeLinks, eventBoxHints, unpinIds, corrections };
 
     } catch (err: any) {
-        if (llmConfig.deferPlateMaintenance) throw err;
         console.error(`❌ [Extraction] 缓冲区提取失败 (${messages.length} 条消息):`, err.message);
-        return { memories: [], crossTimeLinks: [], eventBoxHints: [], unpinIds: [], corrections: [] };
+        throw err;
     }
 }

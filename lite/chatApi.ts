@@ -1,3 +1,4 @@
+import { formatMemoryContext } from './memoryState';
 import type { LiteApiProfile, LiteIdentity, LiteMemoryRecall, LiteMessage, LiteSticker, SharedRecentContext } from './types';
 import { mergeMessageHistory } from './context';
 import { buildLiteBuiltinChatPrompt, buildLiteRoleContext, buildLiteStickerPrompt, buildLiteTimeAwarenessPrompt, formatLiteMessageTime } from './prompts';
@@ -90,9 +91,7 @@ export async function requestLiteReply(input: {
 
   const identity = input.identity;
   const history = mergeMessageHistory([], localMessages.filter(m => m.handoffKind !== 'upload'), 50);
-  const memoryText = input.memories?.length
-    ? `### 记忆宫殿\n以下内容是与本轮话题相关的既有记忆。只在相关时自然影响回复，不要逐条复述，也不要向用户解释检索过程。\n${input.memories.map((memory) => `- **[${memory.room || '记忆'}]**（重要性 ${memory.importance}）：${memory.content}`).join('\n')}`
-    : '';
+  const memoryText = formatMemoryContext(input.memories || []);
   const systemText = [
     buildLiteRoleContext(identity),
     buildLiteBuiltinChatPrompt(),
