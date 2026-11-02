@@ -582,7 +582,10 @@ const renderCoreContext = (
 
         // 4. [NEW] 印象档案 (Private Impression)
         // 这是角色对用户的私密看法，只有角色知道
-        const imp = normalizeUserImpression(char.impression);
+        const profile = localCognition(char.id);
+        const cognition = cognitionText(profile);
+        if (cognition) context += cognition + '\n';
+        const imp = !profile.user && normalizeUserImpression(char.impression);
         if (imp) {
             context += `### [私密档案: 我眼中的${user.name}] (Private Impression)\n`;
             context += `(注意：以下内容是你内心对TA的真实看法，不要直接告诉用户，但要基于这些看法来决定你的态度。)\n`;
@@ -602,8 +605,13 @@ const renderCoreContext = (
         // 与召回记忆不同：这是每轮都在的"你早已知道的背景"，不走相似度抽取。
         // 必须用 memoryPalaceEnabled 把关，理由同下方 5b：注入字段会被 saveCharacter
         // 持久化，宫殿关闭后 injectMemoryPalace 不再刷新它，不校验就会注入残留。
-        if (char.memoryPalaceEnabled && char.roomPlatesInjection && char.roomPlatesInjection.trim()) {
-            context += `${char.roomPlatesInjection}\n`;
+        if (char.memoryPalaceEnabled && char.roomPlatesInjection?.trim()) {
+            const [intro,...sections] = char.roomPlatesInjection.split(/\n\n(?=\*\*)/);
+            const remaining = sections.filter(section =>
+                !(profile.self && section.startsWith('**我是谁**')) &&
+                !(profile.relationship && section.startsWith('**我们之间**')) &&
+                !(profile.user && section.startsWith('**关于')));
+            if (!sections.length || remaining.length) context += [intro,...remaining].join('\n\n')+'\n';
         }
 
         // 5. 记忆库 (Memory Bank)
@@ -718,6 +726,15 @@ function resolveCharacterContext(input: CharacterContextInput) {
         ? input.instructions(rawCoreContext)
         : [rawCoreContext, input.instructions].filter(Boolean).join('\n\n');
     return { coreContext, sections };
+}
+
+import {cached,blank,cognitionText} from './memoryPalace/cognition';
+function localCognition(id:string) {
+    try {
+        const cloud=JSON.parse(localStorage.getItem('os_remote_vector_config') || 'null');
+        if(cloud?.enabled && cloud.initialized) return cached(cloud,id);
+    } catch {}
+    return blank;
 }
 
 function buildCharacterContext(input: CharacterContextInput) {

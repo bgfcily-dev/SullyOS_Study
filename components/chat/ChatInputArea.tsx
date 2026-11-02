@@ -634,6 +634,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
             </div>)}
             <span className="text-xs font-bold">{isSummarizing ? '归档中...' : '记忆归档'}</span>
         </button>,
+        <button key="cognition" onClick={() => onPanelAction('cognition')} className="flex flex-col items-center gap-2"><span className="w-14 h-14 rounded-2xl flex items-center justify-center bg-indigo-50 text-indigo-500"><BookOpenText size={24}/></span><span className="text-xs font-bold">认知档案</span></button>,
         <button key="memory-link"
           onClick={() => onPanelAction('memory-link')}
           className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}

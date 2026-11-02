@@ -53,6 +53,9 @@ import InstantChatRouteNotice from '../components/chat/InstantChatRouteNotice';
 import MemoryRepairPortal from '../components/chat/MemoryRepairPortal';
 import { MemoryChangeNotice } from '../components/chat/MemoryChangeReview';
 import FavoritesPortal from '../components/chat/VoiceFavoritesPortal';
+import {CognitionPanel} from '../utils/memoryPalace/CognitionPanel';
+import {exchange,profileKey} from '../utils/memoryPalace/cognition';
+import {generateCognition} from '../utils/memoryPalace/generateCognition';
 import ChatModals from '../components/chat/ChatModals';
 import ChatHistoryCleanupModal from '../components/chat/ChatHistoryCleanupModal';
 import RecentContextHandoffModal from '../components/chat/RecentContextHandoffModal';
@@ -321,6 +324,11 @@ const Chat: React.FC = () => {
     const [showingTargetIds, setShowingTargetIds] = useState<Set<number>>(new Set());
 
     const char = characters.find(c => c.id === activeCharacterId) || characters[0];
+    const [showCognition,setShowCognition]=useState(false);
+    useEffect(()=>{
+        if(char?.id && remoteVectorConfig?.enabled && remoteVectorConfig.initialized)
+            void exchange(remoteVectorConfig,char.id).catch(()=>{ /* Offline chats use the last received version. */ });
+    },[char?.id,remoteVectorConfig?.enabled,remoteVectorConfig?.initialized,remoteVectorConfig?.supabaseUrl,remoteVectorConfig?.supabaseAnonKey]);
     const memoryRepairRound = useMemo(() => {
         let assistantIndex = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -1722,6 +1730,7 @@ const Chat: React.FC = () => {
             case 'favorites': setShowPanel('none'); setFavoritesOpen(true); break;
             case 'transfer': setModalType('transfer'); break;
             case 'poke': handleSendText('[戳一戳]', 'interaction'); break;
+            case 'cognition': setShowPanel('none'); setShowCognition(true); break;
             case 'archive': setModalType(char?.memoryPalaceEnabled ? 'archive-legacy-warning' : 'archive-settings'); break;
             case 'settings': setModalType('chat-settings'); break;
             case 'chrome-css': setShowPanel('none'); setDecorationTab('library'); setModalType('chrome-css'); break;
@@ -3777,6 +3786,11 @@ const Chat: React.FC = () => {
                 message="检测到分享链接，要关闭自动转卡片吗？关闭后，本条及之后的链接会按原文发送，方便角色用你配置的 MCP 读取。保留卡片也会带上原链接。两类解析可在加号 → 设置中分别调整。"
                 confirmText="关闭，发送原文" cancelText="保留卡片"
                 onConfirm={() => answerLinkCard(false)} onCancel={() => answerLinkCard(true)} />
+            <Modal isOpen={showCognition} title="认知档案" onClose={()=>setShowCognition(false)}>
+                {showCognition && (remoteVectorConfig?.enabled && remoteVectorConfig.initialized
+                    ? <CognitionPanel key={profileKey(remoteVectorConfig,char.id)} cloud={remoteVectorConfig} id={char.id} generate={p=>generateCognition(char,userProfile.name,memoryPalaceConfig.lightLLM,p,remoteVectorConfig)} />
+                    : <p>请先在记忆宫殿配置并启用个人云端记忆库。</p>)}
+            </Modal>
             <ChatModals
                 modalType={modalType} setModalType={setModalType}
                 transferAmt={transferAmt} setTransferAmt={setTransferAmt}

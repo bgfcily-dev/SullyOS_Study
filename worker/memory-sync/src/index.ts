@@ -103,6 +103,7 @@ async function ensureSchema(db: D1Database): Promise<void> {
 
 async function initializeSchema(db: D1Database): Promise<void> {
   const statements = [
+    `CREATE TABLE IF NOT EXISTS cognition_profiles (char_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, profile TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS memory_vectors (
       memory_id TEXT PRIMARY KEY,
       vector_key TEXT NOT NULL UNIQUE,
@@ -590,6 +591,24 @@ export default {
       await ensureSchema(env.DB);
       const url = new URL(request.url);
       const path = url.pathname.replace(/\/+$/, '') || '/';
+      if (path === '/memory/cognition') {
+        const charId = url.searchParams.get('char_id')?.trim();
+        if (!charId || charId.length > 256) return json({error:'角色 ID 无效'}, 400);
+        if (request.method === 'GET') {
+          const row = await env.DB.prepare('SELECT revision, profile FROM cognition_profiles WHERE char_id=?').bind(charId).first<{revision:number;profile:string}>();
+          return json(row ? {revision:row.revision, ...JSON.parse(row.profile)} : {revision:0,self:'',relationship:'',user:''}, 200, {'Cache-Control':'no-store'});
+        }
+        if (request.method !== 'POST') return json({error:'不支持此方法'},405);
+        const data = await request.json() as Record<string,unknown>;
+        if (!data || !Number.isSafeInteger(data.revision) || Number(data.revision)<0 ||
+            !['self','relationship','user'].every(k => typeof data[k]==='string' && (data[k] as string).length<=240)) return json({error:'每栏最多 240 字，版本必须有效'},400);
+        const profile = {self:(data.self as string).trim(),relationship:(data.relationship as string).trim(),user:(data.user as string).trim()};
+        const body = JSON.stringify(profile);
+        const row = data.revision === 0
+          ? await env.DB.prepare('INSERT INTO cognition_profiles VALUES (?,1,?) ON CONFLICT DO NOTHING RETURNING revision').bind(charId,body).first()
+          : await env.DB.prepare('UPDATE cognition_profiles SET profile=?,revision=revision+1 WHERE char_id=? AND revision=? RETURNING revision').bind(body,charId,data.revision).first();
+        return row ? json({...profile,revision:Number(data.revision)+1}) : json({error:'云端已有新版，请重新接收后再编辑'},409);
+      }
       if (path.startsWith('/memory/change-proposals')) return await handleMemoryChanges(request, env, url, { publicMemory: memoryToPublic, normalize: normalizeMemory, bind: row => bindMemory(env.DB, row, true), hash: hashKey, json });
       if (path === '/health') return json({ ok: true, backend: 'cloudflare-memory-sync', capabilities: ['memory_metadata_v1', 'memory_library_search_v1', 'event_box_retirement_v1', 'confirmed_memory_changes_v1'] });
       if (path === '/memory/event-box-policy' && request.method === 'GET') {

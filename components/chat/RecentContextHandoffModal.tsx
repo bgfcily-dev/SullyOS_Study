@@ -199,6 +199,7 @@ const RecentContextHandoffModal: React.FC<RecentContextHandoffModalProps> = ({
           timestamp: message.createdAt,
           metadata: {
             source: 'lite_handoff',
+            handoffBatchId: marker.id,
             handoffCloudMessageId: message.id,
             handoffDeviceId: latest.sourceDeviceId,
             handoffDeviceName: latest.sourceDeviceName,

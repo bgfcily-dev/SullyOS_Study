@@ -1,10 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildReceivedHandoff, fetchSharedContext, handoffSummaryInstructions, initializeHandoffCharacter, parseSharedContextRow, publishSharedContext, receiveHandoffMessages, type HandoffMessage } from './recentContextHandoff';
+import { ChatPrompts } from './chatPrompts';
 import { isMessageSemanticallyRelevant } from './messageFormat';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('role ID handoff', () => {
+  it('brackets only the visible received history and exposes the local upload event', () => {
+    const rows = ['lite_handoff','lite_handoff','handoff_upload','chat'].map((source,index)=>({
+      id:index+1, charId:'c', role:source==='handoff_upload'?'system':'user',type:'text',
+      timestamp:1000+index,content:'消息'+index,metadata:{source}
+    }));
+    const {apiMessages} = ChatPrompts.buildMessageHistory(rows as any,3,{id:'c', name:'角色'} as any,{name:'用户'} as any,[]);
+    expect(apiMessages[0].content).toMatch(/迁入记录开始[\s\S]*消息1[\s\S]*迁入记录结束/);
+    expect(apiMessages[1]).toMatchObject({role:'system',content:expect.stringContaining('本机迁出记录')});
+    expect(apiMessages[2].content).not.toContain('迁入');
+  });
+  it('reads a Cookie summary as background without importing its transport record as a user message', () => {
+    const snapshot=parseSharedContextRow({messages:[{id:'cookie:handoff-summary:v1',content:'迁移摘要',role:'user',createdAt:1}]});
+    expect(snapshot.prompt).toBe('迁移摘要');
+    expect(snapshot.messages).toEqual([]);
+  });
   it('can publish the current character ID before there are recent messages', async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
       new Response(String(init.body), { status: 201, headers: { 'Content-Type': 'application/json' } }));

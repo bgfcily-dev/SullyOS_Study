@@ -94,15 +94,17 @@ export function mergeHandoffMessages(
 }
 
 export function parseSharedContextRow(row: Record<string, unknown>): SharedRecentContext {
+  const records = normalizeHandoffMessages(row.messages);
+  const cookieSummary = records.find(m => m.id === 'cookie:handoff-summary:v1');
   return {
     brainId: HANDOFF_BRAIN_ID,
     charId: String(row.char_id || ''),
-    messages: normalizeHandoffMessages(row.messages),
+    messages: records.filter(m => m.id !== 'cookie:handoff-summary:v1'),
     sourceDeviceId: String(row.source_device_id || ''),
     sourceDeviceName: String(row.source_device_name || row.source_device || ''),
     revision: Number(row.revision) || 1,
     updatedAt: Number(row.updated_at) || 0,
-    prompt: String(normalizeHandoffMessages(row.messages).find(m => m.handoffKind === 'upload')?.handoffSummary || row.prompt || ''),
+    prompt: String(records.find(m => m.handoffKind === 'upload')?.handoffSummary || cookieSummary?.content || row.prompt || ''),
   };
 }
 

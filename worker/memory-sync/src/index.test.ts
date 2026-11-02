@@ -55,8 +55,8 @@ describe('memory-sync access control', () => {
 
     expect(response.status).toBe(200);
     expect(batch).toHaveBeenCalledTimes(2);
-    expect(queries).toHaveLength(18);
-    expect(queries[0]).toContain('\n');
+    expect(queries.some(query => query.includes('CREATE TABLE IF NOT EXISTS cognition_profiles'))).toBe(true);
+    expect(queries.some(query => query.includes('\n'))).toBe(true);
     expect(env.DB.exec).not.toHaveBeenCalled();
   });
 });
