@@ -72,6 +72,16 @@ describe('memory extraction smart-context compatibility gate', () => {
         await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).resolves.toMatchObject({ memories: [] });
     });
 
+    it('uses separate fact and optional linked reflection examples in the generation request', async () => {
+        await extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig);
+        const request = JSON.parse(String(mockedSafeFetchJson.mock.calls[0][1]?.body));
+        const prompt = request.messages[0].content;
+        expect(prompt).toContain('禁止把两者合成一段');
+        expect(prompt).toContain('"kind": "reflection", "event_id": "N0"');
+        expect(prompt).toContain('不要求每个事实都配感想');
+        expect(prompt).not.toContain('那个眼睛亮起来的瞬间让我很开心');
+    });
+
     it('rejects token-truncated output even if its JSON looks complete', async () => {
         mockedSafeFetchJson.mockResolvedValue({ choices: [{ finish_reason: 'length', message: { content: '[]' } }] } as any);
         await expect(extractMemoriesFromBuffer(messages, 'c1', '角色', llmConfig)).rejects.toThrow('截断');

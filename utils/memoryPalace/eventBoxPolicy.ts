@@ -1,4 +1,5 @@
 import type { RemoteVectorConfig } from './types';
+import { reviewedBackendKey } from './remoteBackend';
 
 const policies = new Map<string, { disabled: boolean; expires: number }>();
 
@@ -10,18 +11,19 @@ export async function areEventBoxesDisabled(charId: string, config?: RemoteVecto
     if (!config?.enabled || !config.initialized) return false;
     let base: URL;
     try { base = new URL(config.supabaseUrl); } catch { return false; }
-    if (!base.hostname.endsWith('.workers.dev')) return false;
+    if (!['http:', 'https:'].includes(base.protocol) || base.hostname.endsWith('.supabase.co')) return false;
     const key = JSON.stringify([base.href, config.supabaseAnonKey, charId]);
     const cached = policies.get(key);
     if (cached && cached.expires > Date.now()) return cached.disabled;
-    const persistenceKey = `reviewed-memory-backend:v1:${base.origin}`;
+    const persistenceKey = reviewedBackendKey(base);
     let disabled = false;
     try { disabled = localStorage.getItem(persistenceKey) === '1'; } catch { /* optional */ }
     try {
         const response = await fetch(new URL('/health', base), { headers: { apikey: config.supabaseAnonKey, Authorization: `Bearer ${config.supabaseAnonKey}` }, signal: AbortSignal.timeout(10_000) });
         if (response.ok) {
-            const health = await response.json() as { capabilities?: unknown };
-            disabled = Array.isArray(health.capabilities) && health.capabilities.includes('confirmed_memory_changes_v1');
+            const health = await response.json() as { backend?: string; capabilities?: unknown };
+            disabled = (base.hostname.endsWith('.workers.dev') || health.backend === 'cloudflare-memory-sync')
+                && Array.isArray(health.capabilities) && health.capabilities.includes('confirmed_memory_changes_v1');
             if (disabled) { try { localStorage.setItem(persistenceKey, '1'); } catch { /* optional */ } }
         }
     } catch { /* Keep the known new mode offline. */ }

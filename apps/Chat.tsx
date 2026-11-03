@@ -3788,7 +3788,7 @@ const Chat: React.FC = () => {
                 onConfirm={() => answerLinkCard(false)} onCancel={() => answerLinkCard(true)} />
             <Modal isOpen={showCognition} title="认知档案" onClose={()=>setShowCognition(false)}>
                 {showCognition && (remoteVectorConfig?.enabled && remoteVectorConfig.initialized
-                    ? <CognitionPanel key={profileKey(remoteVectorConfig,char.id)} cloud={remoteVectorConfig} id={char.id} generate={p=>generateCognition(char,userProfile.name,memoryPalaceConfig.lightLLM,p,remoteVectorConfig)} />
+                    ? <CognitionPanel appearance="sully" key={profileKey(remoteVectorConfig,char.id)} cloud={remoteVectorConfig} id={char.id} generate={p=>generateCognition(char,userProfile.name,memoryPalaceConfig.lightLLM,p,remoteVectorConfig)} />
                     : <p>请先在记忆宫殿配置并启用个人云端记忆库。</p>)}
             </Modal>
             <ChatModals

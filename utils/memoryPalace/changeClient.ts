@@ -1,9 +1,10 @@
 import { MEMORY_CHANGE_RULES, stableJson, validateChangeDraft, type ChangeMemory, type MemoryChangeDraft, type MemoryChangeProposal } from './changeContract';
 
 export interface ChangeCloud { supabaseUrl: string; supabaseAnonKey: string }
+import { isReviewedMemoryBackend } from './remoteBackend';
 export const MEMORY_CHANGES_UPDATED = 'memory-change-proposals-updated';
 export const supportsMemoryChanges = (cloud: ChangeCloud) => {
-    try { return new URL(cloud.supabaseUrl).hostname.endsWith('.workers.dev') && !!cloud.supabaseAnonKey.trim(); } catch { return false; }
+    try { return (new URL(cloud.supabaseUrl).hostname.endsWith('.workers.dev') || isReviewedMemoryBackend(cloud.supabaseUrl)) && !!cloud.supabaseAnonKey.trim(); } catch { return false; }
 };
 async function call(cloud: ChangeCloud, path: string, body?: unknown) {
     if (!supportsMemoryChanges(cloud)) throw new Error('确认更新需要使用已升级的 CF 记忆服务');

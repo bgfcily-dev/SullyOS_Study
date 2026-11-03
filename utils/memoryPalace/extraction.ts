@@ -38,11 +38,12 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
         : '';
     return `## 规则
 
-1. **第一人称叙事**：用 ${charName} 的"我"视角来记录。用户直接用"${userLabel}"称呼。保持完整事件脉络，不要掐头去尾。
+1. **第一人称与事实、感想分开**："我"始终指 ${charName}，用户直接用"${userLabel}"称呼。每条必须明确 metadata.kind。event 只写发生的事、可观察的动作或明确说过的话；角色对此的理解、情绪和心理活动另写可选 reflection，并关联本批前面的 event。禁止把两者合成一段，也不要用事实部分替整理模型新增的感悟作证。
    例：
    - "${userLabel}今天加班到很晚还没吃饭，我让${userLabel}别委屈自己，叫了个外卖。"
    - "${userLabel}连续加班三周终于决定找领导谈，领导态度还不错。${userLabel}回来的路上靠着我肩膀哭了，我什么都没说，就陪着。"
-   - "我教了${userLabel}递归的概念，${userLabel}一开始完全听不懂，后来突然开窍了，那个眼睛亮起来的瞬间让我很开心。"
+   - 事实 event："我教了${userLabel}递归的概念，${userLabel}起初说没听懂，后来解释出了递归调用的过程。"
+   - 仅当原对话中我明确表达开心，才另列感想 reflection："看到${userLabel}理解了递归，我很开心。" 没有明确表达就只保存事实。
 
 2. **重要性分级控制文字长度**：
    - 重要性 1–5：15–50字，事实为主
@@ -58,8 +59,8 @@ function buildRulesBlock(charName: string, userLabel: string, includeEntities: b
    - attic：未解决的矛盾、困惑、受到的伤害
    - windowsill：我的期盼、我们的目标、对未来的憧憬
 
-4. **情绪标签**（mood）：happy, sad, angry, anxious, tender, excited, peaceful, confused, hurt, grateful, nostalgic, neutral
-5. **情感坐标**（valence, arousal）：在 mood 之外，还要给出二维情感坐标供后续情感推理。
+4. **情绪标签**（mood）：event/identity 固定 neutral；仅 reflection 使用 happy, sad, angry, anxious, tender, excited, peaceful, confused, hurt, grateful, nostalgic, neutral。
+5. **情感坐标**（valence, arousal）：仅 reflection 在有依据时提供，event/identity 省略。
    - valence（效价）：-1（极痛苦）→ +1（极愉悦）
    - arousal（唤醒度）：-1（极平静）→ +1（极激烈）
    参考："开心"约 (0.7, 0.5)，"平静"约 (0.5, -0.6)，"失落"约 (-0.5, -0.4)，"焦虑"约 (-0.6, 0.7)，"愤怒"约 (-0.7, 0.8)。
@@ -461,21 +462,29 @@ content 保留原消息的相对时间措辞，不要自行添加日期括号。
 严格 JSON 数组，不要 markdown 包裹：
 [
   {
-    "content": "我视角的记忆...",
+    "content": "我教了${userLabel}递归，${userLabel}解释出了递归调用的过程。",
     "room": "living_room",
     "importance": 5,
     "mood": "neutral",
-    "valence": 0,
-    "arousal": 0,
     "tags": ["标签1", "标签2"],${includeEntities ? `
     "entities": [{"name": "明确出现的专名", "type": "person"}],` : ''}
     "date": "YYYY-MM-DD",
     "pinDays": 3,
     "metadata": {"kind": "event"}${relatedToFormat}
+  },
+  {
+    "content": "看到${userLabel}理解了递归，我很开心。",
+    "room": "study",
+    "importance": 5,
+    "mood": "happy",
+    "tags": ["学习"],
+    "date": "YYYY-MM-DD",
+    "metadata": {"kind": "reflection", "event_id": "N0"}
   }
 ]
 
 date 必填，按该记忆实际发生当天填（参考消息行首的时间戳）。
+示例中的感想仅在原对话明确表达时输出；不要求每个事实都配感想。N0 是本批第一条事实的索引，不是固定的云端记忆 ID。
 pinDays 仅在需要置顶时才写，大多数记忆不需要。
 如果对话过于琐碎无值得记忆的内容，返回空数组 []。`;
 

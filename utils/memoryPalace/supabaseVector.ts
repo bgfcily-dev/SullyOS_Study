@@ -9,9 +9,10 @@
 
 import type { RemoteVectorConfig, MemoryNode } from './types';
 import { readMemoryMetadata, type MemoryMetadata } from './metadata';
+import { isReviewedMemoryBackend } from './remoteBackend';
 
 export function metadataEnabled(config: RemoteVectorConfig): boolean {
-    try { return new URL(config.supabaseUrl).hostname.endsWith('.workers.dev'); } catch { return false; }
+    try { return new URL(config.supabaseUrl).hostname.endsWith('.workers.dev') || isReviewedMemoryBackend(config.supabaseUrl); } catch { return false; }
 }
 
 function selectMetadata(config: RemoteVectorConfig): string {

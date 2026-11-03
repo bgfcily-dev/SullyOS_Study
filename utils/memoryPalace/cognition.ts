@@ -13,14 +13,35 @@ export function cached(c:Cloud,id:string):Profile {
   try {const p=JSON.parse(localStorage.getItem(profileKey(c,id)) || 'null'); if(valid(p)) return p;} catch {}
   return blank;
 }
+export async function requestCognitionCloud(c:Cloud, path:string, purpose:string, body?:unknown) {
+  let base: URL;
+  try { base = new URL(c.supabaseUrl.trim()); } catch { throw Error('记忆库地址必须是包含 https:// 的完整网址。'); }
+  if (!['http:', 'https:'].includes(base.protocol)) throw Error('记忆库地址必须使用 https:// 或 http://。');
+  const signal = AbortSignal.timeout(60000);
+  try {
+    const response = await fetch(c.supabaseUrl.trim().replace(/\/+$/, '') + path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: {'Content-Type':'application/json', apikey:c.supabaseAnonKey.trim(), Authorization:'Bearer '+c.supabaseAnonKey.trim()},
+      body: body === undefined ? undefined : JSON.stringify(body), signal, cache:'no-store',
+    });
+    if (!response.ok) {
+      if (response.status === 409) throw Error('云端已有新版，请先备份当前草稿，再接收并合并修改。');
+      throw Error(`${purpose}失败（HTTP ${response.status}）。请检查记忆 Worker 的部署和日志。`);
+    }
+    return await response.json();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (signal.aborted || /abort|timeout/i.test(message)) {
+      const saveHint = body === undefined ? '' : '当前草稿仍保留；云端可能已保存，请先备份草稿，再接收云端核对。';
+      throw Error(`${purpose}${signal.aborted ? '等待 60 秒后超时' : '请求被浏览器或网络取消'}。${saveHint}请保持页面在前台，并检查网络及 Worker 日志。`);
+    }
+    if (error instanceof TypeError) throw Error(`${purpose}网络连接失败，请检查记忆库地址、网络和 Worker 的跨域响应。`);
+    throw error;
+  }
+}
 export async function exchange(c:Cloud,id:string,draft?:Profile):Promise<Profile> {
   if (!c.supabaseUrl || !c.supabaseAnonKey || !id) throw Error('请先配置个人云端记忆库和角色 ID');
-  const response=await fetch(c.supabaseUrl.trim().replace(/\/+$/,'')+'/memory/cognition?char_id='+encodeURIComponent(id),{
-    method:draft?'POST':'GET',headers:{'Content-Type':'application/json',apikey:c.supabaseAnonKey,Authorization:'Bearer '+c.supabaseAnonKey},
-    body:draft?JSON.stringify(draft):undefined,signal:AbortSignal.timeout(20000),cache:'no-store'
-  });
-  if(!response.ok) throw Error(response.status===409?'云端已有新版，请先接收，再合并你的修改。':'读取或保存失败（'+response.status+'），请检查配置并更新记忆 Worker。');
-  const p=await response.json();
+  const p=await requestCognitionCloud(c, '/memory/cognition?char_id='+encodeURIComponent(id), draft ? '保存认知档案' : '读取认知档案', draft);
   if(!valid(p)) throw Error('云端认知档案格式无效');
   const previous=cached(c,id);
   if(previous.revision>p.revision && p.revision>0) return previous;

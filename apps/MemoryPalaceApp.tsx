@@ -63,6 +63,11 @@ import {
 
 /** 手动总结面板：每页渲染多少条聊天记录（翻页，避免一次性塞几百条 DOM 卡顿） */
 const RANGE_PAGE_SIZE = 50;
+const memoryKindLabel = (node: MemoryNode): string => {
+    if (node.isBoxSummary) return '旧事件盒总结';
+    const labels = { event: '事实', reflection: '感想', identity: '身份记录' };
+    return node.metadata?.kind ? labels[node.metadata.kind] || '旧记忆（未分类）' : '旧记忆（未分类）';
+};
 
 /** 手动总结面板：把毫秒时间戳格式化成「2026-03-20 14:30」 */
 const fmtRangeTs = formatRangeTimestamp;
@@ -5292,7 +5297,7 @@ create table if not exists memory_vectors (
                                     <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                             <RoomIcon room={node.room} size={12} style={{ color: ROOM_COLORS[node.room] }} />
-                                            {getRoomLabel(node.room, userProfile?.name)}
+                                            {getRoomLabel(node.room, userProfile?.name)} · {memoryKindLabel(node)}
                                         </span>
                                         <span>{new Date(node.createdAt).toLocaleDateString('zh-CN')}</span>
                                         <span style={{ color }}>{'★'.repeat(Math.min(node.importance, 5))}</span>
@@ -5560,7 +5565,7 @@ create table if not exists memory_vectors (
                             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                     <RoomIcon room={node.room} size={12} style={{ color: ROOM_COLORS[node.room] }} />
-                                    {getRoomLabel(node.room, userProfile?.name)}
+                                    {getRoomLabel(node.room, userProfile?.name)} · {memoryKindLabel(node)}
                                 </span>
                                 <span>重要性: {node.importance}</span>
                                 <span>{node.mood}</span>
@@ -6117,6 +6122,7 @@ create table if not exists memory_vectors (
                                     <span>{getRoomLabel(selectedNode.room, userProfile?.name)}</span>
                                 </div>
                                 <div>重要性: {'★'.repeat(selectedNode.importance)}{'☆'.repeat(10 - selectedNode.importance)}</div>
+                                <div>类型: {memoryKindLabel(selectedNode)}</div>
                                 <div>情绪: {selectedNode.mood}</div>
                                 <div>创建: {new Date(selectedNode.createdAt).toLocaleString('zh-CN')}</div>
                                 <div>最后访问: {new Date(selectedNode.lastAccessedAt).toLocaleString('zh-CN')}</div>
